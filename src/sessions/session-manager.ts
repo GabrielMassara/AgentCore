@@ -134,3 +134,25 @@ export function renameSession(id: string, title: string): AgentSession | undefin
 
   return updated;
 }
+
+// tag null limpa a tag da sessão.
+export function tagSession(id: string, tag: string | null): AgentSession | undefined {
+  const session = sessions.get(id);
+
+  if (!session) {
+    return undefined;
+  }
+
+  const updated: AgentSession = { ...session };
+
+  if (tag) {
+    updated.tag = tag;
+  } else {
+    delete updated.tag;
+  }
+
+  sessions.set(id, updated);
+  saveSessions();
+
+  return updated;
+}

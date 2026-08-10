@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
-import { getSessionMessages, deleteSession as deleteProviderSession, forkSession, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { createSession, getSession, listSessions, deleteSession, renameSession } from '../sessions/session-manager';
+import { getSessionMessages, deleteSession as deleteProviderSession, forkSession, tagSession as tagProviderSession, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import { createSession, getSession, listSessions, deleteSession, renameSession, tagSession } from '../sessions/session-manager';
 import { ClaudeRuntime } from '../runtimes/claude/claude.runtime';
 import { ClaudeEventMapper } from '../runtimes/claude/claude.mapper';
 import { subscribe, unsubscribe } from '../events/event-bus';
@@ -42,6 +42,10 @@ type RenameSessionBody = {
 
 type ForkSessionBody = {
   upToMessageId?: string;
+};
+
+type TagSessionBody = {
+  tag: string | null;
 };
 
 type RejectPermissionBody = {
@@ -270,6 +274,46 @@ export default async function sessionRoutes(app: FastifyInstance) {
       }
 
       return reply.code(201).send(forked);
+    }
+  );
+
+  // Marca uma tag na sessão.
+  app.post<{ Params: { sessionId: string }; Body: TagSessionBody }>(
+    '/v1/sessions/:sessionId/tag',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const session = getSession(sessionId);
+
+      if (!session) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      const body = request.body;
+
+      if (!body || !('tag' in body)) {
+        return reply.code(400).send({ error: '"tag" is required (use null to clear)' });
+      }
+
+      let tag = body.tag;
+
+      if (typeof tag === 'string') {
+        tag = tag.trim() || null;
+      } else if (tag !== null) {
+        return reply.code(400).send({ error: '"tag" must be a string or null' });
+      }
+
+      // Espelha a tag do lado do provedor quando já existe uma conversa pra marcar.
+      if (session.providerSessionId) {
+        try {
+          await tagProviderSession(session.providerSessionId, tag);
+        } catch (err) {
+          request.log.warn(err, 'tagSession: failed to tag provider-side conversation');
+        }
+      }
+
+      const updated = tagSession(sessionId, tag);
+
+      return reply.send(updated);
     }
   );
 

@@ -16,4 +16,5 @@ export type AgentSession = {
   title?: string;
   forkedFrom?: string;
   forkedFromMessageId?: string;
+  tag?: string;
 };
