@@ -45,7 +45,8 @@ export class ClaudeEventMapper {
 
     for (const block of blocks) {
       if (block.type === 'text') {
-        events.push({ type: 'assistant.message', sessionId: this.sessionId, text: block.text });
+        // O uuid identifica uma mensagem específica para fazer o fork
+        events.push({ type: 'assistant.message', sessionId: this.sessionId, text: block.text, messageId: msg.uuid });
       }
 
       if (block.type === 'tool_use') {

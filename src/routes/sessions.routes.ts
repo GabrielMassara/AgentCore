@@ -1,5 +1,5 @@
 import { FastifyInstance } from 'fastify';
-import { getSessionMessages, deleteSession as deleteProviderSession, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import { getSessionMessages, deleteSession as deleteProviderSession, forkSession, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { createSession, getSession, listSessions, deleteSession, renameSession } from '../sessions/session-manager';
 import { ClaudeRuntime } from '../runtimes/claude/claude.runtime';
 import { ClaudeEventMapper } from '../runtimes/claude/claude.mapper';
@@ -38,6 +38,10 @@ type SendMessageBody = {
 
 type RenameSessionBody = {
   title: string;
+};
+
+type ForkSessionBody = {
+  upToMessageId?: string;
 };
 
 type RejectPermissionBody = {
@@ -226,6 +230,46 @@ export default async function sessionRoutes(app: FastifyInstance) {
       deleteSession(sessionId);
 
       return reply.code(200).send({ deleted: true });
+    }
+  );
+
+  // Ramifica a conversa de uma sessão em uma nova sessão independente, sem afetar a original.
+  app.post<{ Params: { sessionId: string }; Body: ForkSessionBody }>(
+    '/v1/sessions/:sessionId/fork',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const session = getSession(sessionId);
+
+      if (!session) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      // Só existe conversa do lado do provedor pra ramificar depois da primeira mensagem.
+      if (!session.providerSessionId) {
+        return reply.code(409).send({ error: 'Session has no conversation to fork yet' });
+      }
+
+      // Se vier um upToMessageId, a ramificação corta a transcrição exatamente nessa mensagem, mensagens posteriores da conversa original não entram na cópia
+      const upToMessageId = request.body && request.body.upToMessageId;
+      const forkOptions = upToMessageId ? { upToMessageId } : undefined;
+
+      let forkResult;
+
+      try {
+        forkResult = await forkSession(session.providerSessionId, forkOptions);
+      } catch (err) {
+        request.log.error(err, 'forkSession: failed to fork provider-side conversation');
+        return reply.code(502).send({ error: 'Failed to fork session' });
+      }
+
+      let forked = createSession(session.runtime, session.projectPath, forkResult.sessionId, session.id, upToMessageId);
+
+      // Propaga um título distinto para a ramificação ficar reconhecível na lista de sessões.
+      if (session.title) {
+        forked = renameSession(forked.id, `${session.title} (fork)`) ?? forked;
+      }
+
+      return reply.code(201).send(forked);
     }
   );
 

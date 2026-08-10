@@ -14,4 +14,6 @@ export type AgentSession = {
   status: SessionStatus;
   createdAt: Date;
   title?: string;
+  forkedFrom?: string;
+  forkedFromMessageId?: string;
 };

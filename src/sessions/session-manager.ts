@@ -45,7 +45,13 @@ function saveSessions() {
 // Carrega as sessões salvas assim que este módulo é importado, na inicialização da API.
 loadSessions();
 
-export function createSession(runtime: 'claude', projectPath: string): AgentSession {
+export function createSession(
+  runtime: 'claude',
+  projectPath: string,
+  providerSessionId?: string,
+  forkedFrom?: string,
+  forkedFromMessageId?: string
+): AgentSession {
   const session: AgentSession = {
     id: randomUUID(),
     runtime,
@@ -53,6 +59,18 @@ export function createSession(runtime: 'claude', projectPath: string): AgentSess
     status: 'ready',
     createdAt: new Date(),
   };
+
+  if (providerSessionId) {
+    session.providerSessionId = providerSessionId;
+  }
+
+  if (forkedFrom) {
+    session.forkedFrom = forkedFrom;
+  }
+
+  if (forkedFromMessageId) {
+    session.forkedFromMessageId = forkedFromMessageId;
+  }
 
   sessions.set(session.id, session);
   saveSessions();
