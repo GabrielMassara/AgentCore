@@ -13,6 +13,13 @@ type SendMessageBody = {
   content: string;
 };
 
+type RejectPermissionBody = {
+  reason?: string;
+};
+
+// Mesma regra do server.ts em que o CORS é liberado só em desenvolvimento.
+const isDev = process.env.NODE_ENV !== 'production';
+
 // Instância única do runtime, compartilhada por todas as requisições.
 // O controle de qual sessão está rodando fica dentro do próprio ClaudeRuntime
 const claudeRuntime = new ClaudeRuntime();
@@ -107,14 +114,26 @@ export default async function sessionRoutes(app: FastifyInstance) {
       }
 
       // A partir daqui a resposta é controlada manualmente usando reply.raw, então
-      // uso o reply.hijack() para que o fastify não tente enviar uma resposta normal sozinho
+      // uso o reply.hijack() para que o fastify não tente enviar uma resposta normal sozinho.
       reply.hijack();
 
-      reply.raw.writeHead(200, {
+      const sseHeaders: Record<string, string> = {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive',
-      });
+      };
+
+      const origin = request.headers.origin;
+
+      if (isDev && origin) {
+        sseHeaders['Access-Control-Allow-Origin'] = origin;
+        sseHeaders['Vary'] = 'Origin';
+      }
+
+      reply.raw.writeHead(200, sseHeaders);
+
+      // Sem isso, o Node só manda os headers junto do primeiro write()
+      reply.raw.flushHeaders();
 
       // Envia um AgentEvent para o cliente conectado no formato que o SSE espera
       function sendEvent(event: AgentEvent) {
@@ -152,6 +171,54 @@ export default async function sessionRoutes(app: FastifyInstance) {
       await claudeRuntime.cancel(sessionId);
 
       return reply.code(200).send({ cancelled: true });
+    }
+  );
+
+  // Aprova um pedido de permissão pendente
+  app.post<{ Params: { sessionId: string; permissionId: string } }>(
+    '/v1/sessions/:sessionId/permissions/:permissionId/approve',
+    async (request, reply) => {
+      const { sessionId, permissionId } = request.params;
+      const session = getSession(sessionId);
+
+      if (!session) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      const resolved = claudeRuntime.resolvePermission(sessionId, permissionId, { behavior: 'allow' });
+
+      if (!resolved) {
+        return reply.code(404).send({ error: 'Permission request not found' });
+      }
+
+      return reply.code(200).send({ approved: true });
+    }
+  );
+
+  // Rejeita um pedido de permissão pendente
+  app.post<{ Params: { sessionId: string; permissionId: string }; Body: RejectPermissionBody }>(
+    '/v1/sessions/:sessionId/permissions/:permissionId/reject',
+    async (request, reply) => {
+      const { sessionId, permissionId } = request.params;
+      const session = getSession(sessionId);
+
+      if (!session) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      let reason = 'Rejected by user';
+
+      if (request.body && request.body.reason) {
+        reason = request.body.reason;
+      }
+
+      const resolved = claudeRuntime.resolvePermission(sessionId, permissionId, { behavior: 'deny', message: reason });
+
+      if (!resolved) {
+        return reply.code(404).send({ error: 'Permission request not found' });
+      }
+
+      return reply.code(200).send({ rejected: true });
     }
   );
 }

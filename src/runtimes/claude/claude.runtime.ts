@@ -1,4 +1,5 @@
-import { query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import { randomUUID } from 'crypto';
+import { query, type SDKMessage, type PermissionResult } from '@anthropic-ai/claude-agent-sdk';
 import { AgentRuntime } from '../agent-runtime';
 import { AgentSession, SessionStatus } from '../../sessions/session';
 import { updateSession } from '../../sessions/session-manager';
@@ -7,6 +8,15 @@ import { ClaudeEventMapper } from './claude.mapper';
 
 // o activeAbortControllers guarda para cada sessao EM EXECUCAO o controle remoto que permite interromper a chamada em andamento
 const activeAbortControllers = new Map<string, AbortController>();
+
+// Guarda cada pedido de permissão esperando uma resposta (approve/reject) vinda da rota HTTP.
+// "resolve" é a função que destrava a Promise que o canUseTool devolveu pra SDK.
+type PendingPermission = {
+  sessionId: string;
+  resolve: (result: PermissionResult) => void;
+};
+
+const pendingPermissions = new Map<string, PendingPermission>();
 
 // Pega a mensagem de um erro genérico, sem quebrar se err não for um Error de verdade.
 function getErrorMessage(err: unknown): string {
@@ -33,9 +43,45 @@ export class ClaudeRuntime implements AgentRuntime {
     // Um mapper novo por execução. ele guarda o nome de cada tool usada
     const eventMapper = new ClaudeEventMapper(session.id);
 
+    // Chamado pela SDK sempre que uma tool precisa de aprovação antes de rodar.
+    // Fica pendurado quando POST /approve ou /reject chegar,
+    // ou quando a execução for cancelada enquanto ainda está esperando.
+    async function canUseTool(
+      toolName: string,
+      _input: Record<string, unknown>,
+      callOptions: { signal: AbortSignal; title?: string; description?: string }
+    ): Promise<PermissionResult> {
+      const permissionId = randomUUID();
+
+      let description = `Usar a tool "${toolName}"`;
+
+      if (callOptions.title) {
+        description = callOptions.title;
+      } else if (callOptions.description) {
+        description = callOptions.description;
+      }
+
+      updateSession(session.id, { status: 'waiting_permission' });
+      publish({ type: 'permission.requested', sessionId: session.id, permissionId, tool: toolName, description });
+
+      return new Promise<PermissionResult>(function executor(resolve) {
+        pendingPermissions.set(permissionId, { sessionId: session.id, resolve });
+
+        // Se a execução for cancelada enquanto a permissão ainda está pendente,
+        // destrava a Promise como negada em vez de deixar isso pendurado para sempre.
+        callOptions.signal.addEventListener('abort', function handleAbort() {
+          if (pendingPermissions.has(permissionId)) {
+            pendingPermissions.delete(permissionId);
+            resolve({ behavior: 'deny', message: 'Execução cancelada' });
+          }
+        });
+      });
+    }
+
     const options: Record<string, unknown> = {
       cwd: session.projectPath,
       abortController,
+      canUseTool,
       // Habilita o envio de mensagens parciais (stream_event), usadas para
       // montar o evento "assistant.delta" enquanto o Claude ainda está escrevendo
       includePartialMessages: true,
@@ -112,5 +158,23 @@ export class ClaudeRuntime implements AgentRuntime {
   async cancel(sessionId: string): Promise<void> {
     // Só sinaliza o abort aqui
     activeAbortControllers.get(sessionId)?.abort();
+  }
+
+  // Resolve um pedido de permissão pendente. Devolve false
+  // se não existir nenhum pedido pendente com esse id para essa sessão.
+  resolvePermission(sessionId: string, permissionId: string, result: PermissionResult): boolean {
+    const pending = pendingPermissions.get(permissionId);
+
+    if (!pending || pending.sessionId !== sessionId) {
+      return false;
+    }
+
+    pendingPermissions.delete(permissionId);
+
+    // A tool vai rodar ou não agora que a permissão foi decidida, então a sessão volta a ficar "running"
+    updateSession(sessionId, { status: 'running' });
+
+    pending.resolve(result);
+    return true;
   }
 }

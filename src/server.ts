@@ -5,14 +5,20 @@ import sessionRoutes from './routes/sessions.routes';
 
 const server = Fastify({ logger: true });
 
-server.register(cors, { origin: true });
+// CORS liberado em desenvolvimento
+// Em produção (NODE_ENV=production) isso fica desligado por completo.
+const isDev = process.env.NODE_ENV !== 'production';
+
+if (isDev) {
+  server.register(cors, { origin: true });
+}
 
 server.register(healthRoutes);
 server.register(sessionRoutes);
 
 const start = async () => {
   try {
-    await server.listen({ port: 3000, host: '0.0.0.0' });
+    await server.listen({ port: 3000, host: '127.0.0.1' });
   } catch (err) {
     server.log.error(err);
     process.exit(1);
