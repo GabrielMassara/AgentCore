@@ -1,6 +1,8 @@
 import { FastifyInstance } from 'fastify';
 import { createSession, getSession } from '../sessions/session-manager';
 import { ClaudeRuntime } from '../runtimes/claude/claude.runtime';
+import { subscribe, unsubscribe } from '../events/event-bus';
+import { AgentEvent } from '../events/agent-event';
 
 type CreateSessionBody = {
   runtime: 'claude';
@@ -90,6 +92,43 @@ export default async function sessionRoutes(app: FastifyInstance) {
       claudeRuntime.sendMessage(session, content).catch(handleSendMessageError);
 
       return reply.code(202).send({ accepted: true });
+    }
+  );
+
+  // Conexão SSE (Server-Sent Events) para acompanhar a execução em tempo real.
+  app.get<{ Params: { sessionId: string } }>(
+    '/v1/sessions/:sessionId/events',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const session = getSession(sessionId);
+
+      if (!session) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      // A partir daqui a resposta é controlada manualmente usando reply.raw, então
+      // uso o reply.hijack() para que o fastify não tente enviar uma resposta normal sozinho
+      reply.hijack();
+
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      });
+
+      // Envia um AgentEvent para o cliente conectado no formato que o SSE espera
+      function sendEvent(event: AgentEvent) {
+        reply.raw.write(`event: ${event.type}\n`);
+        reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
+      }
+
+      subscribe(sessionId, sendEvent);
+
+      // Quando o cliente desconecta, para de escutar e libera o listener
+      request.raw.on('close', function handleClientDisconnect() {
+        unsubscribe(sessionId, sendEvent);
+        reply.raw.end();
+      });
     }
   );
 }
