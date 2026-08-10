@@ -6,13 +6,11 @@
 
 <div align="center">
 
-```
-                                                          
-                                                          
+<pre>
 ▄████▄  ▄▄▄▄ ▄▄▄▄▄ ▄▄  ▄▄ ▄▄▄▄▄▄ ▄█████  ▄▄▄  ▄▄▄▄  ▄▄▄▄▄ 
 ██▄▄██ ██ ▄▄ ██▄▄  ███▄██   ██   ██     ██▀██ ██▄█▄ ██▄▄  
 ██  ██ ▀███▀ ██▄▄▄ ██ ▀██   ██   ▀█████ ▀███▀ ██ ██ ██▄▄▄ 
-```
+</pre>
 
 **A lightweight TypeScript adapter that exposes AI agents as a unified HTTP API.**
 
