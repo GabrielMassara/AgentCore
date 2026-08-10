@@ -77,6 +77,16 @@ export function listSessions(filter?: { status?: SessionStatus }): AgentSession[
   return allSessions;
 }
 
+export function deleteSession(id: string): boolean {
+  const deleted = sessions.delete(id);
+
+  if (deleted) {
+    saveSessions();
+  }
+
+  return deleted;
+}
+
 export function updateSession(id: string, patch: Partial<Pick<AgentSession, 'status' | 'providerSessionId'>>): AgentSession | undefined {
   const session = sessions.get(id);
 

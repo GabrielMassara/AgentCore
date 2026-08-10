@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
-import { getSessionMessages, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { createSession, getSession, listSessions } from '../sessions/session-manager';
+import { getSessionMessages, deleteSession as deleteProviderSession, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import { createSession, getSession, listSessions, deleteSession } from '../sessions/session-manager';
 import { ClaudeRuntime } from '../runtimes/claude/claude.runtime';
 import { ClaudeEventMapper } from '../runtimes/claude/claude.mapper';
 import { subscribe, unsubscribe } from '../events/event-bus';
@@ -169,6 +169,37 @@ export default async function sessionRoutes(app: FastifyInstance) {
       }
 
       return reply.send({ events });
+    }
+  );
+
+  // Remove uma sessão: registro local e a conversa correspondente do lado do provedor
+  app.delete<{ Params: { sessionId: string } }>(
+    '/v1/sessions/:sessionId',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const session = getSession(sessionId);
+
+      if (!session) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      // Apagar uma sessão em execução deixaria o AbortController que a rastreia órfão.
+      if (session.status === 'running' || session.status === 'waiting_permission') {
+        return reply.code(409).send({ error: `Cannot delete session while it is busy (status: "${session.status}")` });
+      }
+
+      // Se a sessão nunca chegou a falar com o agente não há conversa do lado do provedor para apagar.
+      if (session.providerSessionId) {
+        try {
+          await deleteProviderSession(session.providerSessionId);
+        } catch (err) {
+          request.log.warn(err, 'deleteSession: failed to delete provider-side conversation');
+        }
+      }
+
+      deleteSession(sessionId);
+
+      return reply.code(200).send({ deleted: true });
     }
   );
 
