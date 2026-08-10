@@ -6,13 +6,11 @@
 
 <div align="center">
 
-```
-                                                          
-                                                          
+<pre>
 ▄████▄  ▄▄▄▄ ▄▄▄▄▄ ▄▄  ▄▄ ▄▄▄▄▄▄ ▄█████  ▄▄▄  ▄▄▄▄  ▄▄▄▄▄ 
 ██▄▄██ ██ ▄▄ ██▄▄  ███▄██   ██   ██     ██▀██ ██▄█▄ ██▄▄  
 ██  ██ ▀███▀ ██▄▄▄ ██ ▀██   ██   ▀█████ ▀███▀ ██ ██ ██▄▄▄ 
-```
+</pre>
 
 **Um adaptador leve em TypeScript que expõe agentes de IA como uma API HTTP unificada.**
 
@@ -65,4 +63,24 @@ A API sobe em `http://localhost:3000`.
 ```bash
 npm run build
 npm start
+```
+
+## Estrutura do projeto
+
+```
+src/
+├── server.ts               # bootstrap do Fastify
+├── routes/
+│   └── sessions.routes.ts  # rotas HTTP + SSE
+├── sessions/
+│   ├── session.ts          # tipos de sessão
+│   └── session-manager.ts  # CRUD de sessões + persistência em JSON
+├── events/
+│   ├── agent-event.ts      # contrato de eventos exposto ao cliente
+│   └── event-bus.ts        # pub/sub de eventos por sessão
+└── runtimes/
+    ├── agent-runtime.ts    # interface comum a qualquer runtime de IA
+    └── claude/
+        ├── claude.runtime.ts  # implementação usando a Claude Agent SDK
+        └── claude.mapper.ts   # SDK message → AgentEvent
 ```
