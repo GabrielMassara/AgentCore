@@ -1,6 +1,8 @@
 import { FastifyInstance } from 'fastify';
+import { getSessionMessages, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { createSession, getSession, listSessions } from '../sessions/session-manager';
 import { ClaudeRuntime } from '../runtimes/claude/claude.runtime';
+import { ClaudeEventMapper } from '../runtimes/claude/claude.mapper';
 import { subscribe, unsubscribe } from '../events/event-bus';
 import { AgentEvent } from '../events/agent-event';
 import { SessionStatus } from '../sessions/session';
@@ -24,6 +26,11 @@ const validStatuses: SessionStatus[] = [
   'cancelled',
   'error',
 ];
+
+type SessionHistoryQuery = {
+  limit?: string;
+  offset?: string;
+};
 
 type SendMessageBody = {
   content: string;
@@ -107,6 +114,63 @@ export default async function sessionRoutes(app: FastifyInstance) {
 
     return reply.send(session);
   });
+
+  // Recupera o histórico de mensagens de uma conversa direto do armazenamento local da SDK
+  app.get<{ Params: { sessionId: string }; Querystring: SessionHistoryQuery }>(
+    '/v1/sessions/:sessionId/history',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const { limit, offset } = request.query;
+
+      const session = getSession(sessionId);
+
+      // Se a sessão é conhecida localmente mas nunca chegou a falar com o Claude nao tem como pegar
+      if (session && !session.providerSessionId) {
+        return reply.code(404).send({ error: 'Session has no history yet' });
+      }
+
+      // Se o registro local existe, usa o providerSessionId dele. Senão, trata o próprio :sessionId como sendo o providerSessionId
+      const providerSessionId = session ? session.providerSessionId! : sessionId;
+
+      const options: { limit?: number; offset?: number } = {};
+
+      if (limit !== undefined) {
+        const parsedLimit = Number(limit);
+
+        if (!Number.isInteger(parsedLimit) || parsedLimit < 1) {
+          return reply.code(400).send({ error: '"limit" must be a positive integer' });
+        }
+
+        options.limit = parsedLimit;
+      }
+
+      if (offset !== undefined) {
+        const parsedOffset = Number(offset);
+
+        if (!Number.isInteger(parsedOffset) || parsedOffset < 0) {
+          return reply.code(400).send({ error: '"offset" must be a non-negative integer' });
+        }
+
+        options.offset = parsedOffset;
+      }
+
+      const messages = await getSessionMessages(providerSessionId, options);
+
+      if (!messages.length) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      // Reaproveita o mesmo mapper usado no fluxo ao vivo, para que o histórico chegue ao cliente no mesmo formato de AgentEvent usado no SSE.
+      const eventMapper = new ClaudeEventMapper(sessionId);
+      const events: AgentEvent[] = [];
+
+      for (const message of messages) {
+        events.push(...eventMapper.map(message as unknown as SDKMessage));
+      }
+
+      return reply.send({ events });
+    }
+  );
 
   // Envia uma mensagem para o Claude dentro de uma sessão existente.
   app.post<{ Params: { sessionId: string }; Body: SendMessageBody }>(

@@ -88,6 +88,11 @@ export class ClaudeEventMapper {
           output: block.content,
         });
       }
+
+      // Texto puro em uma mensagem "user" só acontece ao reproduzir histórico pq no fluxo ao vivo essa mensagem nunca passa pelo mapper.
+      if (block.type === 'text') {
+        events.push({ type: 'user.message', sessionId: this.sessionId, text: block.text });
+      }
     }
 
     return events;
