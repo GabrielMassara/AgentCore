@@ -1,13 +1,29 @@
 import { FastifyInstance } from 'fastify';
-import { createSession, getSession } from '../sessions/session-manager';
+import { createSession, getSession, listSessions } from '../sessions/session-manager';
 import { ClaudeRuntime } from '../runtimes/claude/claude.runtime';
 import { subscribe, unsubscribe } from '../events/event-bus';
 import { AgentEvent } from '../events/agent-event';
+import { SessionStatus } from '../sessions/session';
 
 type CreateSessionBody = {
   runtime: 'claude';
   projectPath: string;
 };
+
+type ListSessionsQuery = {
+  status?: string;
+  limit?: string;
+  offset?: string;
+};
+
+const validStatuses: SessionStatus[] = [
+  'ready',
+  'running',
+  'waiting_permission',
+  'completed',
+  'cancelled',
+  'error',
+];
 
 type SendMessageBody = {
   content: string;
@@ -41,6 +57,43 @@ export default async function sessionRoutes(app: FastifyInstance) {
 
     const session = createSession(runtime, projectPath);
     return reply.code(201).send(session);
+  });
+
+  // Lista as sessões conhecidas, com filtro opcional por status e paginação.
+  app.get<{ Querystring: ListSessionsQuery }>('/v1/sessions', async (request, reply) => {
+    const { status, limit, offset } = request.query;
+
+    if (status && !validStatuses.includes(status as SessionStatus)) {
+      return reply.code(400).send({ error: `Invalid status: "${status}"` });
+    }
+
+    let parsedLimit = 20;
+    if (limit !== undefined) {
+      parsedLimit = Number(limit);
+
+      if (!Number.isInteger(parsedLimit) || parsedLimit < 1) {
+        return reply.code(400).send({ error: '"limit" must be a positive integer' });
+      }
+    }
+
+    let parsedOffset = 0;
+    if (offset !== undefined) {
+      parsedOffset = Number(offset);
+
+      if (!Number.isInteger(parsedOffset) || parsedOffset < 0) {
+        return reply.code(400).send({ error: '"offset" must be a non-negative integer' });
+      }
+    }
+
+    const allSessions = listSessions(status ? { status: status as SessionStatus } : undefined);
+    const page = allSessions.slice(parsedOffset, parsedOffset + parsedLimit);
+
+    return reply.send({
+      sessions: page,
+      total: allSessions.length,
+      limit: parsedLimit,
+      offset: parsedOffset,
+    });
   });
 
   // Consulta o estado atual de uma sessão (status, providerSessionId, etc).

@@ -64,6 +64,19 @@ export function getSession(id: string): AgentSession | undefined {
   return sessions.get(id);
 }
 
+export function listSessions(filter?: { status?: SessionStatus }): AgentSession[] {
+  let allSessions = Array.from(sessions.values());
+
+  if (filter && filter.status) {
+    allSessions = allSessions.filter((session) => session.status === filter.status);
+  }
+
+  // Mais recentes primeiro
+  allSessions.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+  return allSessions;
+}
+
 export function updateSession(id: string, patch: Partial<Pick<AgentSession, 'status' | 'providerSessionId'>>): AgentSession | undefined {
   const session = sessions.get(id);
 
