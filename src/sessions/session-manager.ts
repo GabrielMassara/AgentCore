@@ -101,3 +101,18 @@ export function updateSession(id: string, patch: Partial<Pick<AgentSession, 'sta
 
   return updated;
 }
+
+export function renameSession(id: string, title: string): AgentSession | undefined {
+  const session = sessions.get(id);
+
+  if (!session) {
+    return undefined;
+  }
+
+  const updated: AgentSession = { ...session, title };
+
+  sessions.set(id, updated);
+  saveSessions();
+
+  return updated;
+}

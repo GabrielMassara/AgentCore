@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { getSessionMessages, deleteSession as deleteProviderSession, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { createSession, getSession, listSessions, deleteSession } from '../sessions/session-manager';
+import { createSession, getSession, listSessions, deleteSession, renameSession } from '../sessions/session-manager';
 import { ClaudeRuntime } from '../runtimes/claude/claude.runtime';
 import { ClaudeEventMapper } from '../runtimes/claude/claude.mapper';
 import { subscribe, unsubscribe } from '../events/event-bus';
@@ -34,6 +34,10 @@ type SessionHistoryQuery = {
 
 type SendMessageBody = {
   content: string;
+};
+
+type RenameSessionBody = {
+  title: string;
 };
 
 type RejectPermissionBody = {
@@ -114,6 +118,28 @@ export default async function sessionRoutes(app: FastifyInstance) {
 
     return reply.send(session);
   });
+
+  // Renomeia uma sessão, alterando apenas o título exibido.
+  app.patch<{ Params: { sessionId: string }; Body: RenameSessionBody }>(
+    '/v1/sessions/:sessionId',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+
+      if (!getSession(sessionId)) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      const title = request.body && request.body.title;
+
+      if (!title || typeof title !== 'string' || !title.trim()) {
+        return reply.code(400).send({ error: '"title" is required' });
+      }
+
+      const updated = renameSession(sessionId, title.trim());
+
+      return reply.send(updated);
+    }
+  );
 
   // Recupera o histórico de mensagens de uma conversa direto do armazenamento local da SDK
   app.get<{ Params: { sessionId: string }; Querystring: SessionHistoryQuery }>(

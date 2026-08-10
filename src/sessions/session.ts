@@ -13,4 +13,5 @@ export type AgentSession = {
   providerSessionId?: string;
   status: SessionStatus;
   createdAt: Date;
+  title?: string;
 };
