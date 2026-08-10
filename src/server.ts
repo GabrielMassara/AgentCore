@@ -1,8 +1,11 @@
 import Fastify from 'fastify';
+import cors from '@fastify/cors';
 import healthRoutes from './routes/health';
 import sessionRoutes from './routes/sessions.routes';
 
 const server = Fastify({ logger: true });
+
+server.register(cors, { origin: true });
 
 server.register(healthRoutes);
 server.register(sessionRoutes);
