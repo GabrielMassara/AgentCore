@@ -1,16 +1,51 @@
 import { FastifyInstance } from 'fastify';
-import { createSession, getSession } from '../sessions/session-manager';
+import { getSessionMessages, deleteSession as deleteProviderSession, forkSession, tagSession as tagProviderSession, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import { createSession, getSession, listSessions, deleteSession, renameSession, tagSession } from '../sessions/session-manager';
 import { ClaudeRuntime } from '../runtimes/claude/claude.runtime';
+import { ClaudeEventMapper } from '../runtimes/claude/claude.mapper';
 import { subscribe, unsubscribe } from '../events/event-bus';
 import { AgentEvent } from '../events/agent-event';
+import { SessionStatus } from '../sessions/session';
 
 type CreateSessionBody = {
   runtime: 'claude';
   projectPath: string;
 };
 
+type ListSessionsQuery = {
+  status?: string;
+  limit?: string;
+  offset?: string;
+};
+
+const validStatuses: SessionStatus[] = [
+  'ready',
+  'running',
+  'waiting_permission',
+  'completed',
+  'cancelled',
+  'error',
+];
+
+type SessionHistoryQuery = {
+  limit?: string;
+  offset?: string;
+};
+
 type SendMessageBody = {
   content: string;
+};
+
+type RenameSessionBody = {
+  title: string;
+};
+
+type ForkSessionBody = {
+  upToMessageId?: string;
+};
+
+type TagSessionBody = {
+  tag: string | null;
 };
 
 type RejectPermissionBody = {
@@ -43,6 +78,43 @@ export default async function sessionRoutes(app: FastifyInstance) {
     return reply.code(201).send(session);
   });
 
+  // Lista as sessões conhecidas, com filtro opcional por status e paginação.
+  app.get<{ Querystring: ListSessionsQuery }>('/v1/sessions', async (request, reply) => {
+    const { status, limit, offset } = request.query;
+
+    if (status && !validStatuses.includes(status as SessionStatus)) {
+      return reply.code(400).send({ error: `Invalid status: "${status}"` });
+    }
+
+    let parsedLimit = 20;
+    if (limit !== undefined) {
+      parsedLimit = Number(limit);
+
+      if (!Number.isInteger(parsedLimit) || parsedLimit < 1) {
+        return reply.code(400).send({ error: '"limit" must be a positive integer' });
+      }
+    }
+
+    let parsedOffset = 0;
+    if (offset !== undefined) {
+      parsedOffset = Number(offset);
+
+      if (!Number.isInteger(parsedOffset) || parsedOffset < 0) {
+        return reply.code(400).send({ error: '"offset" must be a non-negative integer' });
+      }
+    }
+
+    const allSessions = listSessions(status ? { status: status as SessionStatus } : undefined);
+    const page = allSessions.slice(parsedOffset, parsedOffset + parsedLimit);
+
+    return reply.send({
+      sessions: page,
+      total: allSessions.length,
+      limit: parsedLimit,
+      offset: parsedOffset,
+    });
+  });
+
   // Consulta o estado atual de uma sessão (status, providerSessionId, etc).
   app.get<{ Params: { sessionId: string } }>('/v1/sessions/:sessionId', async (request, reply) => {
     const { sessionId } = request.params;
@@ -54,6 +126,196 @@ export default async function sessionRoutes(app: FastifyInstance) {
 
     return reply.send(session);
   });
+
+  // Renomeia uma sessão, alterando apenas o título exibido.
+  app.patch<{ Params: { sessionId: string }; Body: RenameSessionBody }>(
+    '/v1/sessions/:sessionId',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+
+      if (!getSession(sessionId)) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      const title = request.body && request.body.title;
+
+      if (!title || typeof title !== 'string' || !title.trim()) {
+        return reply.code(400).send({ error: '"title" is required' });
+      }
+
+      const updated = renameSession(sessionId, title.trim());
+
+      return reply.send(updated);
+    }
+  );
+
+  // Recupera o histórico de mensagens de uma conversa direto do armazenamento local da SDK
+  app.get<{ Params: { sessionId: string }; Querystring: SessionHistoryQuery }>(
+    '/v1/sessions/:sessionId/history',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const { limit, offset } = request.query;
+
+      const session = getSession(sessionId);
+
+      // Se a sessão é conhecida localmente mas nunca chegou a falar com o Claude nao tem como pegar
+      if (session && !session.providerSessionId) {
+        return reply.code(404).send({ error: 'Session has no history yet' });
+      }
+
+      // Se o registro local existe, usa o providerSessionId dele. Senão, trata o próprio :sessionId como sendo o providerSessionId
+      const providerSessionId = session ? session.providerSessionId! : sessionId;
+
+      const options: { limit?: number; offset?: number } = {};
+
+      if (limit !== undefined) {
+        const parsedLimit = Number(limit);
+
+        if (!Number.isInteger(parsedLimit) || parsedLimit < 1) {
+          return reply.code(400).send({ error: '"limit" must be a positive integer' });
+        }
+
+        options.limit = parsedLimit;
+      }
+
+      if (offset !== undefined) {
+        const parsedOffset = Number(offset);
+
+        if (!Number.isInteger(parsedOffset) || parsedOffset < 0) {
+          return reply.code(400).send({ error: '"offset" must be a non-negative integer' });
+        }
+
+        options.offset = parsedOffset;
+      }
+
+      const messages = await getSessionMessages(providerSessionId, options);
+
+      if (!messages.length) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      // Reaproveita o mesmo mapper usado no fluxo ao vivo, para que o histórico chegue ao cliente no mesmo formato de AgentEvent usado no SSE.
+      const eventMapper = new ClaudeEventMapper(sessionId);
+      const events: AgentEvent[] = [];
+
+      for (const message of messages) {
+        events.push(...eventMapper.map(message as unknown as SDKMessage));
+      }
+
+      return reply.send({ events });
+    }
+  );
+
+  // Remove uma sessão: registro local e a conversa correspondente do lado do provedor
+  app.delete<{ Params: { sessionId: string } }>(
+    '/v1/sessions/:sessionId',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const session = getSession(sessionId);
+
+      if (!session) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      // Apagar uma sessão em execução deixaria o AbortController que a rastreia órfão.
+      if (session.status === 'running' || session.status === 'waiting_permission') {
+        return reply.code(409).send({ error: `Cannot delete session while it is busy (status: "${session.status}")` });
+      }
+
+      // Se a sessão nunca chegou a falar com o agente não há conversa do lado do provedor para apagar.
+      if (session.providerSessionId) {
+        try {
+          await deleteProviderSession(session.providerSessionId);
+        } catch (err) {
+          request.log.warn(err, 'deleteSession: failed to delete provider-side conversation');
+        }
+      }
+
+      deleteSession(sessionId);
+
+      return reply.code(200).send({ deleted: true });
+    }
+  );
+
+  // Ramifica a conversa de uma sessão em uma nova sessão independente, sem afetar a original.
+  app.post<{ Params: { sessionId: string }; Body: ForkSessionBody }>(
+    '/v1/sessions/:sessionId/fork',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const session = getSession(sessionId);
+
+      if (!session) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      // Só existe conversa do lado do provedor pra ramificar depois da primeira mensagem.
+      if (!session.providerSessionId) {
+        return reply.code(409).send({ error: 'Session has no conversation to fork yet' });
+      }
+
+      // Se vier um upToMessageId, a ramificação corta a transcrição exatamente nessa mensagem, mensagens posteriores da conversa original não entram na cópia
+      const upToMessageId = request.body && request.body.upToMessageId;
+      const forkOptions = upToMessageId ? { upToMessageId } : undefined;
+
+      let forkResult;
+
+      try {
+        forkResult = await forkSession(session.providerSessionId, forkOptions);
+      } catch (err) {
+        request.log.error(err, 'forkSession: failed to fork provider-side conversation');
+        return reply.code(502).send({ error: 'Failed to fork session' });
+      }
+
+      let forked = createSession(session.runtime, session.projectPath, forkResult.sessionId, session.id, upToMessageId);
+
+      // Propaga um título distinto para a ramificação ficar reconhecível na lista de sessões.
+      if (session.title) {
+        forked = renameSession(forked.id, `${session.title} (fork)`) ?? forked;
+      }
+
+      return reply.code(201).send(forked);
+    }
+  );
+
+  // Marca uma tag na sessão.
+  app.post<{ Params: { sessionId: string }; Body: TagSessionBody }>(
+    '/v1/sessions/:sessionId/tag',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const session = getSession(sessionId);
+
+      if (!session) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      const body = request.body;
+
+      if (!body || !('tag' in body)) {
+        return reply.code(400).send({ error: '"tag" is required (use null to clear)' });
+      }
+
+      let tag = body.tag;
+
+      if (typeof tag === 'string') {
+        tag = tag.trim() || null;
+      } else if (tag !== null) {
+        return reply.code(400).send({ error: '"tag" must be a string or null' });
+      }
+
+      // Espelha a tag do lado do provedor quando já existe uma conversa pra marcar.
+      if (session.providerSessionId) {
+        try {
+          await tagProviderSession(session.providerSessionId, tag);
+        } catch (err) {
+          request.log.warn(err, 'tagSession: failed to tag provider-side conversation');
+        }
+      }
+
+      const updated = tagSession(sessionId, tag);
+
+      return reply.send(updated);
+    }
+  );
 
   // Envia uma mensagem para o Claude dentro de uma sessão existente.
   app.post<{ Params: { sessionId: string }; Body: SendMessageBody }>(

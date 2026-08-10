@@ -45,7 +45,13 @@ function saveSessions() {
 // Carrega as sessões salvas assim que este módulo é importado, na inicialização da API.
 loadSessions();
 
-export function createSession(runtime: 'claude', projectPath: string): AgentSession {
+export function createSession(
+  runtime: 'claude',
+  projectPath: string,
+  providerSessionId?: string,
+  forkedFrom?: string,
+  forkedFromMessageId?: string
+): AgentSession {
   const session: AgentSession = {
     id: randomUUID(),
     runtime,
@@ -53,6 +59,18 @@ export function createSession(runtime: 'claude', projectPath: string): AgentSess
     status: 'ready',
     createdAt: new Date(),
   };
+
+  if (providerSessionId) {
+    session.providerSessionId = providerSessionId;
+  }
+
+  if (forkedFrom) {
+    session.forkedFrom = forkedFrom;
+  }
+
+  if (forkedFromMessageId) {
+    session.forkedFromMessageId = forkedFromMessageId;
+  }
 
   sessions.set(session.id, session);
   saveSessions();
@@ -64,6 +82,29 @@ export function getSession(id: string): AgentSession | undefined {
   return sessions.get(id);
 }
 
+export function listSessions(filter?: { status?: SessionStatus }): AgentSession[] {
+  let allSessions = Array.from(sessions.values());
+
+  if (filter && filter.status) {
+    allSessions = allSessions.filter((session) => session.status === filter.status);
+  }
+
+  // Mais recentes primeiro
+  allSessions.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+  return allSessions;
+}
+
+export function deleteSession(id: string): boolean {
+  const deleted = sessions.delete(id);
+
+  if (deleted) {
+    saveSessions();
+  }
+
+  return deleted;
+}
+
 export function updateSession(id: string, patch: Partial<Pick<AgentSession, 'status' | 'providerSessionId'>>): AgentSession | undefined {
   const session = sessions.get(id);
 
@@ -72,6 +113,43 @@ export function updateSession(id: string, patch: Partial<Pick<AgentSession, 'sta
   }
 
   const updated: AgentSession = { ...session, ...patch };
+
+  sessions.set(id, updated);
+  saveSessions();
+
+  return updated;
+}
+
+export function renameSession(id: string, title: string): AgentSession | undefined {
+  const session = sessions.get(id);
+
+  if (!session) {
+    return undefined;
+  }
+
+  const updated: AgentSession = { ...session, title };
+
+  sessions.set(id, updated);
+  saveSessions();
+
+  return updated;
+}
+
+// tag null limpa a tag da sessão.
+export function tagSession(id: string, tag: string | null): AgentSession | undefined {
+  const session = sessions.get(id);
+
+  if (!session) {
+    return undefined;
+  }
+
+  const updated: AgentSession = { ...session };
+
+  if (tag) {
+    updated.tag = tag;
+  } else {
+    delete updated.tag;
+  }
 
   sessions.set(id, updated);
   saveSessions();

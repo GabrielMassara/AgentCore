@@ -10,7 +10,7 @@ const server = Fastify({ logger: true });
 const isDev = process.env.NODE_ENV !== 'production';
 
 if (isDev) {
-  server.register(cors, { origin: true });
+  server.register(cors, { origin: true, methods: ['GET', 'HEAD', 'POST', 'PATCH', 'DELETE', 'PUT'] });
 }
 
 server.register(healthRoutes);

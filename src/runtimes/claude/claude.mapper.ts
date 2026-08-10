@@ -45,7 +45,8 @@ export class ClaudeEventMapper {
 
     for (const block of blocks) {
       if (block.type === 'text') {
-        events.push({ type: 'assistant.message', sessionId: this.sessionId, text: block.text });
+        // O uuid identifica uma mensagem específica para fazer o fork
+        events.push({ type: 'assistant.message', sessionId: this.sessionId, text: block.text, messageId: msg.uuid });
       }
 
       if (block.type === 'tool_use') {
@@ -87,6 +88,11 @@ export class ClaudeEventMapper {
           tool: toolName,
           output: block.content,
         });
+      }
+
+      // Texto puro em uma mensagem "user" só acontece ao reproduzir histórico pq no fluxo ao vivo essa mensagem nunca passa pelo mapper.
+      if (block.type === 'text') {
+        events.push({ type: 'user.message', sessionId: this.sessionId, text: block.text });
       }
     }
 
