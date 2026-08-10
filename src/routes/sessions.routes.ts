@@ -131,4 +131,27 @@ export default async function sessionRoutes(app: FastifyInstance) {
       });
     }
   );
+
+  // Cancela a execução em andamento de uma sessão.
+  app.post<{ Params: { sessionId: string } }>(
+    '/v1/sessions/:sessionId/cancel',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const session = getSession(sessionId);
+
+      if (!session) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      // Só existe execução para cancelar se a sessão estiver "running".
+      if (session.status !== 'running') {
+        return reply.code(409).send({ error: `Session has no execution to cancel (status: "${session.status}")` });
+      }
+
+      // Só sinaliza o cancelamento aqui. depois o catch de sendMessage sinaliza de fato quando a execução realmente parar.
+      await claudeRuntime.cancel(sessionId);
+
+      return reply.code(200).send({ cancelled: true });
+    }
+  );
 }

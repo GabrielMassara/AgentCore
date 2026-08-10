@@ -50,6 +50,9 @@ export class ClaudeRuntime implements AgentRuntime {
     // mensagens conforme o Claude processa o pedido
     const q = query({ prompt: content, options });
 
+    // Marca se a execução já chegou a um estado final
+    let finished = false;
+
     try {
       // percorre cada mensagem emitida pela SDK durante a execução.
       for await (const message of q) {
@@ -76,6 +79,9 @@ export class ClaudeRuntime implements AgentRuntime {
           } else {
             publish({ type: 'agent.error', sessionId: session.id, message: (sdkMsg as any).subtype });
           }
+
+          // A execução chegou a um estado final
+          finished = true;
         }
 
         // Converte a mensagem da SDK em AgentEvent e publica cada um deles para os clientes SSE conectados nesta sessão.
@@ -86,9 +92,10 @@ export class ClaudeRuntime implements AgentRuntime {
         }
       }
     } catch (err) {
-      // Se o erro veio de um cancel(), o AbortController já está marcado como "aborted".
-      // Nesse caso é um cancelamento esperado, não uma falha de verdade.
-      if (abortController.signal.aborted) {
+      if (finished) {
+        // A execução já tinha terminado antes desse erro
+      } else if (abortController.signal.aborted) {
+        // Se o erro veio de um cancel(), o AbortController já está marcado como "aborted".
         updateSession(session.id, { status: 'cancelled' });
         publish({ type: 'agent.cancelled', sessionId: session.id });
       } else {
