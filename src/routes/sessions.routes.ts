@@ -69,6 +69,11 @@ type SetModelBody = {
   model: string | null;
 };
 
+type RewindFilesBody = {
+  userMessageId: string;
+  dryRun?: boolean;
+};
+
 // Mesma regra do server.ts em que o CORS é liberado só em desenvolvimento.
 const isDev = process.env.NODE_ENV !== 'production';
 
@@ -183,7 +188,12 @@ export default async function sessionRoutes(app: FastifyInstance) {
       // Se o registro local existe, usa o providerSessionId dele. Senão, trata o próprio :sessionId como sendo o providerSessionId
       const providerSessionId = session ? session.providerSessionId! : sessionId;
 
-      const options: { limit?: number; offset?: number } = {};
+      const options: { limit?: number; offset?: number; dir?: string } = {};
+
+      // Passa "dir" quando dá pra evitar o fallback pouco confiável da SDK de vasculhar todos os projetos.
+      if (session) {
+        options.dir = session.projectPath;
+      }
 
       if (limit !== undefined) {
         const parsedLimit = Number(limit);
@@ -535,6 +545,56 @@ export default async function sessionRoutes(app: FastifyInstance) {
       }
 
       return reply.code(200).send({ model, applied });
+    }
+  );
+
+  // Desfaz as edições de arquivo que o Claude fez até uma mensagem de usuário específica.
+  app.post<{ Params: { sessionId: string }; Body: RewindFilesBody }>(
+    '/v1/sessions/:sessionId/rewind',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const session = getSession(sessionId);
+
+      if (!session) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      const body = request.body;
+      const userMessageId = body && body.userMessageId;
+
+      if (!userMessageId || typeof userMessageId !== 'string') {
+        return reply.code(400).send({ error: '"userMessageId" is required' });
+      }
+
+      let dryRun: boolean | undefined;
+
+      if (body && 'dryRun' in body && body.dryRun !== undefined) {
+        if (typeof body.dryRun !== 'boolean') {
+          return reply.code(400).send({ error: '"dryRun" must be a boolean' });
+        }
+
+        dryRun = body.dryRun;
+      }
+
+      // Mesma regra do /fork: só existe conversa do lado do provedor depois da primeira mensagem.
+      if (!session.providerSessionId) {
+        return reply.code(409).send({ error: 'Session has no conversation to rewind yet' });
+      }
+
+      let result;
+
+      try {
+        result = await claudeRuntime.rewindFiles(session, userMessageId, dryRun !== undefined ? { dryRun } : undefined);
+      } catch (err) {
+        request.log.error(err, 'rewindFiles: failed to rewind files');
+        return reply.code(502).send({ error: 'Failed to rewind files' });
+      }
+
+      if (!result) {
+        return reply.code(409).send({ error: 'Session has no conversation to rewind yet' });
+      }
+
+      return reply.code(200).send(result);
     }
   );
 

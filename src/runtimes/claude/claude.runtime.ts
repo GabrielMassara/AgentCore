@@ -6,6 +6,7 @@ import {
   type SDKUserMessage,
   type PermissionResult,
   type PermissionMode,
+  type RewindFilesResult,
 } from '@anthropic-ai/claude-agent-sdk';
 import { AgentRuntime } from '../agent-runtime';
 import { AgentSession, SessionStatus } from '../../sessions/session';
@@ -27,6 +28,20 @@ async function* singleMessageStream(content: string): AsyncGenerator<SDKUserMess
     message: { role: 'user', content },
     parent_tool_use_id: null,
   };
+}
+
+// Stream vazio, só pra manter a Query aberta em streaming-input mode até o abortController ser abortado.
+async function* idleStream(signal: AbortSignal): AsyncGenerator<SDKUserMessage> {
+  await new Promise<void>(function waitForAbort(resolve) {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+
+    signal.addEventListener('abort', function handleAbort() {
+      resolve();
+    }, { once: true });
+  });
 }
 
 // Guarda cada pedido de permissão esperando uma resposta (approve/reject) vinda da rota HTTP.
@@ -105,6 +120,8 @@ export class ClaudeRuntime implements AgentRuntime {
       // Habilita o envio de mensagens parciais (stream_event), usadas para
       // montar o evento "assistant.delta" enquanto o Claude ainda está escrevendo
       includePartialMessages: true,
+      // Necessário para Query.rewindFiles() funcionar.
+      enableFileCheckpointing: true,
     };
 
     // Se a sessão já tem um providerSessionId (uma conversa anterior com o Claude), usa resume para continuar a mesma conversa em vez de começar do zero
@@ -216,6 +233,42 @@ export class ClaudeRuntime implements AgentRuntime {
 
     await activeQuery.setModel(model);
     return true;
+  }
+
+  // Desfaz as edições de arquivo feitas pelo Claude, restaurando o estado de uma mensagem de usuário específica.
+  async rewindFiles(
+    session: AgentSession,
+    userMessageId: string,
+    options?: { dryRun?: boolean }
+  ): Promise<RewindFilesResult | null> {
+    const activeQuery = activeQueries.get(session.id);
+
+    if (activeQuery) {
+      return activeQuery.rewindFiles(userMessageId, options);
+    }
+
+    if (!session.providerSessionId) {
+      return null;
+    }
+
+    const abortController = new AbortController();
+
+    const q = query({
+      prompt: idleStream(abortController.signal),
+      options: {
+        cwd: session.projectPath,
+        resume: session.providerSessionId,
+        enableFileCheckpointing: true,
+        abortController,
+      },
+    });
+
+    try {
+      return await q.rewindFiles(userMessageId, options);
+    } finally {
+      // Encerra a conexão à parte aberta só pra esse control request.
+      abortController.abort();
+    }
   }
 
   // Resolve um pedido de permissão pendente. Devolve false
