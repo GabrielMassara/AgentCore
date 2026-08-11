@@ -1,5 +1,12 @@
 import { randomUUID } from 'crypto';
-import { query, type SDKMessage, type PermissionResult } from '@anthropic-ai/claude-agent-sdk';
+import {
+  query,
+  type Query,
+  type SDKMessage,
+  type SDKUserMessage,
+  type PermissionResult,
+  type PermissionMode,
+} from '@anthropic-ai/claude-agent-sdk';
 import { AgentRuntime } from '../agent-runtime';
 import { AgentSession, SessionStatus } from '../../sessions/session';
 import { updateSession } from '../../sessions/session-manager';
@@ -8,6 +15,19 @@ import { ClaudeEventMapper } from './claude.mapper';
 
 // o activeAbortControllers guarda para cada sessao EM EXECUCAO o controle remoto que permite interromper a chamada em andamento
 const activeAbortControllers = new Map<string, AbortController>();
+
+// Guarda, para cada sessão EM EXECUÇÃO, a Query devolvida pela SDK. Os métodos de controle
+// (setPermissionMode, setModel, interrupt) só existem nesse objeto, e só funcionam quando o
+// prompt foi passado em streaming-input mode (AsyncIterable) em vez de string simples.
+const activeQueries = new Map<string, Query>();
+
+async function* singleMessageStream(content: string): AsyncGenerator<SDKUserMessage> {
+  yield {
+    type: 'user',
+    message: { role: 'user', content },
+    parent_tool_use_id: null,
+  };
+}
 
 // Guarda cada pedido de permissão esperando uma resposta (approve/reject) vinda da rota HTTP.
 // "resolve" é a função que destrava a Promise que o canUseTool devolveu pra SDK.
@@ -92,9 +112,17 @@ export class ClaudeRuntime implements AgentRuntime {
       options.resume = session.providerSessionId;
     }
 
+    // Modo padrão configurado via POST /v1/sessions/:id/permission-mode antes desta execução
+    // começar. Se n tiver isso a SDK usa o próprio default dela
+    if (session.permissionMode) {
+      options.permissionMode = session.permissionMode;
+    }
+
     // Chama a Claude Agent SDK. O retorno é um async generator que vai emitindo
-    // mensagens conforme o Claude processa o pedido
-    const q = query({ prompt: content, options });
+    // mensagens conforme o Claude processa o pedido. O prompt vai como AsyncIterable
+    // (streaming-input mode) para permitir setPermissionMode/setModel/interrupt durante a execução.
+    const q = query({ prompt: singleMessageStream(content), options });
+    activeQueries.set(session.id, q);
 
     // Marca se a execução já chegou a um estado final
     let finished = false;
@@ -150,14 +178,27 @@ export class ClaudeRuntime implements AgentRuntime {
         throw err;
       }
     } finally {
-      // Removo o AbortController da execucao
+      // Removo o AbortController e a Query da execucao
       activeAbortControllers.delete(session.id);
+      activeQueries.delete(session.id);
     }
   }
 
   async cancel(sessionId: string): Promise<void> {
     // Só sinaliza o abort aqui
     activeAbortControllers.get(sessionId)?.abort();
+  }
+
+  // Troca o permission mode da execução em andamento. Devolve false se a sessão não tiver uma execução ativa no momento
+  async setPermissionMode(sessionId: string, mode: PermissionMode): Promise<boolean> {
+    const activeQuery = activeQueries.get(sessionId);
+
+    if (!activeQuery) {
+      return false;
+    }
+
+    await activeQuery.setPermissionMode(mode);
+    return true;
   }
 
   // Resolve um pedido de permissão pendente. Devolve false

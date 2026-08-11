@@ -1,3 +1,5 @@
+import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk';
+
 export type SessionStatus =
   | 'ready'
   | 'running'
@@ -17,4 +19,5 @@ export type AgentSession = {
   forkedFrom?: string;
   forkedFromMessageId?: string;
   tag?: string;
+  permissionMode?: PermissionMode;
 };

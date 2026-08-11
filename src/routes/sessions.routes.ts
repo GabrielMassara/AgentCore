@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
-import { getSessionMessages, deleteSession as deleteProviderSession, forkSession, tagSession as tagProviderSession, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { createSession, getSession, listSessions, deleteSession, renameSession, tagSession } from '../sessions/session-manager';
+import { getSessionMessages, deleteSession as deleteProviderSession, forkSession, tagSession as tagProviderSession, type SDKMessage, type PermissionMode } from '@anthropic-ai/claude-agent-sdk';
+import { createSession, getSession, listSessions, deleteSession, renameSession, tagSession, updateSession } from '../sessions/session-manager';
 import { ClaudeRuntime } from '../runtimes/claude/claude.runtime';
 import { ClaudeEventMapper } from '../runtimes/claude/claude.mapper';
 import { subscribe, unsubscribe } from '../events/event-bus';
@@ -51,6 +51,19 @@ type TagSessionBody = {
 type RejectPermissionBody = {
   reason?: string;
 };
+
+type SetPermissionModeBody = {
+  mode: PermissionMode;
+};
+
+const validPermissionModes: PermissionMode[] = [
+  'default',
+  'acceptEdits',
+  'bypassPermissions',
+  'plan',
+  'dontAsk',
+  'auto',
+];
 
 // Mesma regra do server.ts em que o CORS é liberado só em desenvolvimento.
 const isDev = process.env.NODE_ENV !== 'production';
@@ -433,6 +446,44 @@ export default async function sessionRoutes(app: FastifyInstance) {
       await claudeRuntime.cancel(sessionId);
 
       return reply.code(200).send({ cancelled: true });
+    }
+  );
+
+  // Configura o permission mode de uma sessão. Sempre grava como o padrão usado na próxima
+  // query() (options.permissionMode) se já existe uma execução em andamento, aplica na hora
+  app.post<{ Params: { sessionId: string }; Body: SetPermissionModeBody }>(
+    '/v1/sessions/:sessionId/permission-mode',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const session = getSession(sessionId);
+
+      if (!session) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      const mode = request.body && request.body.mode;
+
+      if (!mode || !validPermissionModes.includes(mode)) {
+        return reply.code(400).send({ error: `"mode" must be one of: ${validPermissionModes.join(', ')}` });
+      }
+
+      updateSession(sessionId, { permissionMode: mode });
+
+      let applied: 'live' | 'pending' = 'pending';
+
+      if (session.status === 'running' || session.status === 'waiting_permission') {
+        try {
+          const changedLive = await claudeRuntime.setPermissionMode(sessionId, mode);
+
+          if (changedLive) {
+            applied = 'live';
+          }
+        } catch (err) {
+          request.log.warn(err, 'setPermissionMode: failed to apply live, kept as the session default');
+        }
+      }
+
+      return reply.code(200).send({ mode, applied });
     }
   );
 
