@@ -105,7 +105,7 @@ export function deleteSession(id: string): boolean {
   return deleted;
 }
 
-export function updateSession(id: string, patch: Partial<Pick<AgentSession, 'status' | 'providerSessionId' | 'permissionMode'>>): AgentSession | undefined {
+export function updateSession(id: string, patch: Partial<Pick<AgentSession, 'status' | 'providerSessionId' | 'permissionMode' | 'model'>>): AgentSession | undefined {
   const session = sessions.get(id);
 
   if (!session) {

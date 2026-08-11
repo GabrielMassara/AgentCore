@@ -118,6 +118,12 @@ export class ClaudeRuntime implements AgentRuntime {
       options.permissionMode = session.permissionMode;
     }
 
+    // Mesma lógica pro modelo, configurado via POST /v1/sessions/:id/model. Sem isso a SDK
+    // usa o próprio default do CLI.
+    if (session.model) {
+      options.model = session.model;
+    }
+
     // Chama a Claude Agent SDK. O retorno é um async generator que vai emitindo
     // mensagens conforme o Claude processa o pedido. O prompt vai como AsyncIterable
     // (streaming-input mode) para permitir setPermissionMode/setModel/interrupt durante a execução.
@@ -198,6 +204,17 @@ export class ClaudeRuntime implements AgentRuntime {
     }
 
     await activeQuery.setPermissionMode(mode);
+    return true;
+  }
+
+  async setModel(sessionId: string, model: string | undefined): Promise<boolean> {
+    const activeQuery = activeQueries.get(sessionId);
+
+    if (!activeQuery) {
+      return false;
+    }
+
+    await activeQuery.setModel(model);
     return true;
   }
 

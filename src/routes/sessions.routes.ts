@@ -65,6 +65,10 @@ const validPermissionModes: PermissionMode[] = [
   'auto',
 ];
 
+type SetModelBody = {
+  model: string | null;
+};
+
 // Mesma regra do server.ts em que o CORS é liberado só em desenvolvimento.
 const isDev = process.env.NODE_ENV !== 'production';
 
@@ -484,6 +488,53 @@ export default async function sessionRoutes(app: FastifyInstance) {
       }
 
       return reply.code(200).send({ mode, applied });
+    }
+  );
+
+  // Configura o modelo de uma sessão. Mesmo padrão do /permission-mode: sempre grava como o
+  // padrão usado na próxima query() (options.model), e aplica na hora também via
+  // Query.setModel quando já existe uma execução em andamento
+  app.post<{ Params: { sessionId: string }; Body: SetModelBody }>(
+    '/v1/sessions/:sessionId/model',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const session = getSession(sessionId);
+
+      if (!session) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      const body = request.body;
+
+      if (!body || !('model' in body)) {
+        return reply.code(400).send({ error: '"model" is required (use null to reset to the CLI default)' });
+      }
+
+      let model = body.model;
+
+      if (typeof model === 'string') {
+        model = model.trim() || null;
+      } else if (model !== null) {
+        return reply.code(400).send({ error: '"model" must be a string or null' });
+      }
+
+      updateSession(sessionId, { model: model === null ? undefined : model });
+
+      let applied: 'live' | 'pending' = 'pending';
+
+      if (session.status === 'running' || session.status === 'waiting_permission') {
+        try {
+          const changedLive = await claudeRuntime.setModel(sessionId, model === null ? undefined : model);
+
+          if (changedLive) {
+            applied = 'live';
+          }
+        } catch (err) {
+          request.log.warn(err, 'setModel: failed to apply live, kept as the session default');
+        }
+      }
+
+      return reply.code(200).send({ model, applied });
     }
   );
 

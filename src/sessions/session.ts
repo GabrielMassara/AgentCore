@@ -19,5 +19,6 @@ export type AgentSession = {
   forkedFrom?: string;
   forkedFromMessageId?: string;
   tag?: string;
-  permissionMode?: PermissionMode;
+  permissionMode?: PermissionMode | undefined;
+  model?: string | undefined;
 };
