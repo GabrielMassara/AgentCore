@@ -8,7 +8,7 @@ import { readCodexHistory } from '../runtimes/codex/codex.history';
 import { AgentRuntime } from '../runtimes/agent-runtime';
 import { subscribe, unsubscribe } from '../events/event-bus';
 import { AgentEvent } from '../events/agent-event';
-import { AgentSession, SessionStatus, CodexSandboxMode, CodexReasoningEffort } from '../sessions/session';
+import { AgentSession, SessionStatus, CodexSandboxMode, CodexReasoningEffort, CodexWebSearchMode } from '../sessions/session';
 
 type CreateSessionBody = {
   runtime: 'claude' | 'codex';
@@ -88,6 +88,17 @@ const validCodexReasoningEfforts: CodexReasoningEffort[] = [
   'medium',
   'high',
   'xhigh',
+];
+
+type SetCodexWebSearchBody = {
+  mode?: CodexWebSearchMode;
+  enabled?: boolean;
+};
+
+const validCodexWebSearchModes: CodexWebSearchMode[] = [
+  'disabled',
+  'cached',
+  'live',
 ];
 
 type SetModelBody = {
@@ -651,6 +662,51 @@ export default async function sessionRoutes(app: FastifyInstance) {
       updateSession(sessionId, { codexReasoningEffort: effort });
 
       return reply.code(200).send({ effort, applied: 'pending' });
+    }
+  );
+
+  // Configura a busca na web do Codex para uma sessão
+  app.post<{ Params: { sessionId: string }; Body: SetCodexWebSearchBody }>(
+    '/v1/sessions/:sessionId/codex-web-search',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const session = getSession(sessionId);
+
+      if (!session) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      if (session.runtime !== 'codex') {
+        return reply.code(400).send({ error: 'codex-web-search only applies to Codex sessions' });
+      }
+
+      const { mode, enabled } = request.body ?? {};
+
+      if (mode === undefined && enabled === undefined) {
+        return reply.code(400).send({ error: 'must provide "mode" and/or "enabled"' });
+      }
+
+      if (mode !== undefined && !validCodexWebSearchModes.includes(mode)) {
+        return reply.code(400).send({ error: `"mode" must be one of: ${validCodexWebSearchModes.join(', ')}` });
+      }
+
+      if (enabled !== undefined && typeof enabled !== 'boolean') {
+        return reply.code(400).send({ error: '"enabled" must be a boolean' });
+      }
+
+      const patch: { codexWebSearchMode?: CodexWebSearchMode; codexWebSearchEnabled?: boolean } = {};
+
+      if (mode !== undefined) {
+        patch.codexWebSearchMode = mode;
+      }
+
+      if (enabled !== undefined) {
+        patch.codexWebSearchEnabled = enabled;
+      }
+
+      updateSession(sessionId, patch);
+
+      return reply.code(200).send({ mode: mode ?? session.codexWebSearchMode, enabled: enabled ?? session.codexWebSearchEnabled, applied: 'pending' });
     }
   );
 

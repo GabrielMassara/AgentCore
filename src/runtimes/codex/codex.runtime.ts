@@ -104,6 +104,14 @@ export class CodexRuntime implements AgentRuntime {
       threadOptions.modelReasoningEffort = session.codexReasoningEffort;
     }
 
+    if (session.codexWebSearchMode) {
+      threadOptions.webSearchMode = session.codexWebSearchMode;
+    }
+
+    if (session.codexWebSearchEnabled !== undefined) {
+      threadOptions.webSearchEnabled = session.codexWebSearchEnabled;
+    }
+
     const codex = await getCodex();
 
     // Se a sessão já tem um providerSessionId usa ela em vez de começar uma conversa nova
