@@ -646,7 +646,8 @@ export default async function sessionRoutes(app: FastifyInstance) {
 
       let applied: 'live' | 'pending' = 'pending';
 
-      if (session.status === 'running' || session.status === 'waiting_permission') {
+      // Só o Claude tem um canal aberto pra aplicar isso numa execução em andamento
+      if (session.runtime === 'claude' && (session.status === 'running' || session.status === 'waiting_permission')) {
         try {
           const changedLive = await claudeRuntime.setModel(sessionId, model === null ? undefined : model);
 
