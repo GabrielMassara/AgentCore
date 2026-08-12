@@ -3,12 +3,14 @@ import { getSessionMessages, deleteSession as deleteProviderSession, forkSession
 import { createSession, getSession, listSessions, deleteSession, renameSession, tagSession, updateSession } from '../sessions/session-manager';
 import { ClaudeRuntime } from '../runtimes/claude/claude.runtime';
 import { ClaudeEventMapper } from '../runtimes/claude/claude.mapper';
+import { CodexRuntime } from '../runtimes/codex/codex.runtime';
+import { AgentRuntime } from '../runtimes/agent-runtime';
 import { subscribe, unsubscribe } from '../events/event-bus';
 import { AgentEvent } from '../events/agent-event';
-import { SessionStatus } from '../sessions/session';
+import { AgentSession, SessionStatus } from '../sessions/session';
 
 type CreateSessionBody = {
-  runtime: 'claude';
+  runtime: 'claude' | 'codex';
   projectPath: string;
 };
 
@@ -77,9 +79,15 @@ type RewindFilesBody = {
 // Mesma regra do server.ts em que o CORS é liberado só em desenvolvimento.
 const isDev = process.env.NODE_ENV !== 'production';
 
-// Instância única do runtime, compartilhada por todas as requisições.
-// O controle de qual sessão está rodando fica dentro do próprio ClaudeRuntime
+// Instância única de cada runtime, compartilhada por todas as requisições.
+// O controle de qual sessão está rodando fica dentro do próprio runtime.
 const claudeRuntime = new ClaudeRuntime();
+const codexRuntime = new CodexRuntime();
+
+// Escolhe a instância de runtime certa para uma sessão de acordo com o campo AgentSession.runtime.
+function runtimeFor(session: AgentSession): AgentRuntime {
+  return session.runtime === 'codex' ? codexRuntime : claudeRuntime;
+}
 
 export default async function sessionRoutes(app: FastifyInstance) {
   // Cria uma sessão nova apenas registro interno
@@ -91,8 +99,7 @@ export default async function sessionRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: '"runtime" and "projectPath" are required' });
     }
 
-    // Por enquanto só existe suporte ao runtime do claude, mas depois vou fazer para outros
-    if (runtime !== 'claude') {
+    if (runtime !== 'claude' && runtime !== 'codex') {
       return reply.code(400).send({ error: `Unsupported runtime: "${runtime}"` });
     }
 
@@ -354,7 +361,8 @@ export default async function sessionRoutes(app: FastifyInstance) {
       }
 
       // Espelha a tag do lado do provedor quando já existe uma conversa pra marcar.
-      if (session.providerSessionId) {
+      // Só existe pro Claude, a Codex SDK não expõe nada equivalente
+      if (session.runtime === 'claude' && session.providerSessionId) {
         try {
           await tagProviderSession(session.providerSessionId, tag);
         } catch (err) {
@@ -402,14 +410,14 @@ export default async function sessionRoutes(app: FastifyInstance) {
         return reply.code(409).send({ error: `Session is busy (status: "${session.status}")` });
       }
 
-      // Loga qualquer erro que aconteça durante a execução do Claude em background.
+      // Loga qualquer erro que aconteça durante a execução do agente em background.
       function handleSendMessageError(err: unknown) {
-        request.log.error(err, 'ClaudeRuntime.sendMessage failed');
+        request.log.error(err, 'AgentRuntime.sendMessage failed');
       }
 
-      // A chamada ao Claude vai roda em background
-      // O cliente HTTP vai receber a resposta 202 imediatamente sem esperar o Claude terminar
-      claudeRuntime.sendMessage(session, content).catch(handleSendMessageError);
+      // A chamada ao agente roda em background.
+      // O cliente HTTP vai receber a resposta 202 imediatamente sem esperar o agente terminar
+      runtimeFor(session).sendMessage(session, content).catch(handleSendMessageError);
 
       return reply.code(202).send({ accepted: true });
     }
@@ -481,7 +489,7 @@ export default async function sessionRoutes(app: FastifyInstance) {
       }
 
       // Só sinaliza o cancelamento aqui. depois o catch de sendMessage sinaliza de fato quando a execução realmente parar.
-      await claudeRuntime.cancel(sessionId);
+      await runtimeFor(session).cancel(sessionId);
 
       return reply.code(200).send({ cancelled: true });
     }

@@ -28,7 +28,7 @@ export type SessionUsage = {
 
 export type AgentSession = {
   id: string;
-  runtime: 'claude';
+  runtime: 'claude' | 'codex';
   projectPath: string;
   providerSessionId?: string;
   status: SessionStatus;
