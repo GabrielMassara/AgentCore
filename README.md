@@ -6,13 +6,12 @@
 
 <div align="center">
 
-```
-                                                          
+<pre>                                                       
                                                           
 ▄████▄  ▄▄▄▄ ▄▄▄▄▄ ▄▄  ▄▄ ▄▄▄▄▄▄ ▄█████  ▄▄▄  ▄▄▄▄  ▄▄▄▄▄ 
 ██▄▄██ ██ ▄▄ ██▄▄  ███▄██   ██   ██     ██▀██ ██▄█▄ ██▄▄  
 ██  ██ ▀███▀ ██▄▄▄ ██ ▀██   ██   ▀█████ ▀███▀ ██ ██ ██▄▄▄ 
-```
+</pre>
 
 **Um adaptador leve em TypeScript que expõe agentes de IA como uma API HTTP unificada.**
 
