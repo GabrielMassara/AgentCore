@@ -1,13 +1,49 @@
 import { randomUUID } from 'crypto';
-import { query, type SDKMessage, type PermissionResult } from '@anthropic-ai/claude-agent-sdk';
-import { AgentRuntime } from '../agent-runtime';
-import { AgentSession, SessionStatus } from '../../sessions/session';
+import {
+  query,
+  type Query,
+  type SDKMessage,
+  type SDKResultMessage,
+  type SDKUserMessage,
+  type PermissionResult,
+  type PermissionMode,
+  type RewindFilesResult,
+} from '@anthropic-ai/claude-agent-sdk';
+import { AgentRuntime, RuntimeModel } from '../agent-runtime';
+import { AgentSession, SessionStatus, type SessionUsage } from '../../sessions/session';
 import { updateSession } from '../../sessions/session-manager';
 import { publish } from '../../events/event-bus';
 import { ClaudeEventMapper } from './claude.mapper';
 
 // o activeAbortControllers guarda para cada sessao EM EXECUCAO o controle remoto que permite interromper a chamada em andamento
 const activeAbortControllers = new Map<string, AbortController>();
+
+// Guarda, para cada sessão EM EXECUÇÃO, a Query devolvida pela SDK. Os métodos de controle
+// (setPermissionMode, setModel, interrupt) só existem nesse objeto, e só funcionam quando o
+// prompt foi passado em streaming-input mode (AsyncIterable) em vez de string simples.
+const activeQueries = new Map<string, Query>();
+
+async function* singleMessageStream(content: string): AsyncGenerator<SDKUserMessage> {
+  yield {
+    type: 'user',
+    message: { role: 'user', content },
+    parent_tool_use_id: null,
+  };
+}
+
+// Stream vazio, só pra manter a Query aberta em streaming-input mode até o abortController ser abortado.
+async function* idleStream(signal: AbortSignal): AsyncGenerator<SDKUserMessage> {
+  await new Promise<void>(function waitForAbort(resolve) {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+
+    signal.addEventListener('abort', function handleAbort() {
+      resolve();
+    }, { once: true });
+  });
+}
 
 // Guarda cada pedido de permissão esperando uma resposta (approve/reject) vinda da rota HTTP.
 // "resolve" é a função que destrava a Promise que o canUseTool devolveu pra SDK.
@@ -17,6 +53,40 @@ type PendingPermission = {
 };
 
 const pendingPermissions = new Map<string, PendingPermission>();
+
+// Soma o total_cost_usd/usage/modelUsage de uma mensagem "result" ao acumulado anterior da sessão,
+// já que esses valores começam do zero a cada nova Query
+function accumulateUsage(existing: SessionUsage | undefined, result: SDKResultMessage): SessionUsage {
+  const usage: SessionUsage = existing
+    ? { ...existing, modelUsage: { ...existing.modelUsage } }
+    : { totalCostUsd: 0, inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, modelUsage: {} };
+
+  usage.totalCostUsd += result.total_cost_usd;
+  usage.inputTokens += result.usage.input_tokens;
+  usage.outputTokens += result.usage.output_tokens;
+  usage.cacheReadInputTokens += result.usage.cache_read_input_tokens;
+  usage.cacheCreationInputTokens += result.usage.cache_creation_input_tokens;
+
+  for (const [model, modelUsage] of Object.entries(result.modelUsage)) {
+    const totals = usage.modelUsage[model] ?? {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      costUsd: 0,
+    };
+
+    usage.modelUsage[model] = {
+      inputTokens: totals.inputTokens + modelUsage.inputTokens,
+      outputTokens: totals.outputTokens + modelUsage.outputTokens,
+      cacheReadInputTokens: totals.cacheReadInputTokens + modelUsage.cacheReadInputTokens,
+      cacheCreationInputTokens: totals.cacheCreationInputTokens + modelUsage.cacheCreationInputTokens,
+      costUsd: totals.costUsd + modelUsage.costUSD,
+    };
+  }
+
+  return usage;
+}
 
 // Pega a mensagem de um erro genérico, sem quebrar se err não for um Error de verdade.
 function getErrorMessage(err: unknown): string {
@@ -85,6 +155,8 @@ export class ClaudeRuntime implements AgentRuntime {
       // Habilita o envio de mensagens parciais (stream_event), usadas para
       // montar o evento "assistant.delta" enquanto o Claude ainda está escrevendo
       includePartialMessages: true,
+      // Necessário para Query.rewindFiles() funcionar.
+      enableFileCheckpointing: true,
     };
 
     // Se a sessão já tem um providerSessionId (uma conversa anterior com o Claude), usa resume para continuar a mesma conversa em vez de começar do zero
@@ -92,9 +164,23 @@ export class ClaudeRuntime implements AgentRuntime {
       options.resume = session.providerSessionId;
     }
 
+    // Modo padrão configurado via POST /v1/sessions/:id/permission-mode antes desta execução
+    // começar. Se n tiver isso a SDK usa o próprio default dela
+    if (session.permissionMode) {
+      options.permissionMode = session.permissionMode;
+    }
+
+    // Mesma lógica pro modelo, configurado via POST /v1/sessions/:id/model. Sem isso a SDK
+    // usa o próprio default do CLI.
+    if (session.model) {
+      options.model = session.model;
+    }
+
     // Chama a Claude Agent SDK. O retorno é um async generator que vai emitindo
-    // mensagens conforme o Claude processa o pedido
-    const q = query({ prompt: content, options });
+    // mensagens conforme o Claude processa o pedido. O prompt vai como AsyncIterable
+    // (streaming-input mode) para permitir setPermissionMode/setModel/interrupt durante a execução.
+    const q = query({ prompt: singleMessageStream(content), options });
+    activeQueries.set(session.id, q);
 
     // Marca se a execução já chegou a um estado final
     let finished = false;
@@ -118,7 +204,7 @@ export class ClaudeRuntime implements AgentRuntime {
             status = 'error';
           }
 
-          updateSession(session.id, { status });
+          updateSession(session.id, { status, usage: accumulateUsage(session.usage, sdkMsg) });
 
           if (status === 'completed') {
             publish({ type: 'agent.completed', sessionId: session.id });
@@ -150,14 +236,95 @@ export class ClaudeRuntime implements AgentRuntime {
         throw err;
       }
     } finally {
-      // Removo o AbortController da execucao
+      // Removo o AbortController e a Query da execucao
       activeAbortControllers.delete(session.id);
+      activeQueries.delete(session.id);
     }
   }
 
   async cancel(sessionId: string): Promise<void> {
     // Só sinaliza o abort aqui
     activeAbortControllers.get(sessionId)?.abort();
+  }
+
+  // Troca o permission mode da execução em andamento. Devolve false se a sessão não tiver uma execução ativa no momento
+  async setPermissionMode(sessionId: string, mode: PermissionMode): Promise<boolean> {
+    const activeQuery = activeQueries.get(sessionId);
+
+    if (!activeQuery) {
+      return false;
+    }
+
+    await activeQuery.setPermissionMode(mode);
+    return true;
+  }
+
+  async setModel(sessionId: string, model: string | undefined): Promise<boolean> {
+    const activeQuery = activeQueries.get(sessionId);
+
+    if (!activeQuery) {
+      return false;
+    }
+
+    await activeQuery.setModel(model);
+    return true;
+  }
+
+  // Pergunta pra própria CLI quais modelos ela suporta agora
+  async listModels(): Promise<RuntimeModel[]> {
+    const abortController = new AbortController();
+    const q = query({
+      prompt: idleStream(abortController.signal),
+      options: { cwd: process.cwd(), abortController },
+    });
+
+    try {
+      const models = await q.supportedModels();
+
+      return models.map((model) => ({
+        id: model.value,
+        displayName: model.displayName,
+        description: model.description,
+      }));
+    } finally {
+      abortController.abort();
+    }
+  }
+
+  // Desfaz as edições de arquivo feitas pelo Claude, restaurando o estado de uma mensagem de usuário específica.
+  async rewindFiles(
+    session: AgentSession,
+    userMessageId: string,
+    options?: { dryRun?: boolean }
+  ): Promise<RewindFilesResult | null> {
+    const activeQuery = activeQueries.get(session.id);
+
+    if (activeQuery) {
+      return activeQuery.rewindFiles(userMessageId, options);
+    }
+
+    if (!session.providerSessionId) {
+      return null;
+    }
+
+    const abortController = new AbortController();
+
+    const q = query({
+      prompt: idleStream(abortController.signal),
+      options: {
+        cwd: session.projectPath,
+        resume: session.providerSessionId,
+        enableFileCheckpointing: true,
+        abortController,
+      },
+    });
+
+    try {
+      return await q.rewindFiles(userMessageId, options);
+    } finally {
+      // Encerra a conexão à parte aberta só pra esse control request.
+      abortController.abort();
+    }
   }
 
   // Resolve um pedido de permissão pendente. Devolve false

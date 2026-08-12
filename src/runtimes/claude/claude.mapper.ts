@@ -70,6 +70,15 @@ export class ClaudeEventMapper {
     const events: AgentEvent[] = [];
     const blocks = msg.message ? msg.message.content : undefined;
 
+    // No histórico, o CLI às vezes grava "content" como string pura em vez do array de blocks.
+    if (typeof blocks === 'string') {
+      if (blocks) {
+        events.push({ type: 'user.message', sessionId: this.sessionId, text: blocks, messageId: msg.uuid });
+      }
+
+      return events;
+    }
+
     if (!Array.isArray(blocks)) {
       return events;
     }
@@ -90,9 +99,9 @@ export class ClaudeEventMapper {
         });
       }
 
-      // Texto puro em uma mensagem "user" só acontece ao reproduzir histórico pq no fluxo ao vivo essa mensagem nunca passa pelo mapper.
+      // Texto puro em uma mensagem "user" só acontece ao reproduzir histórico; o uuid vira o userMessageId do rewind.
       if (block.type === 'text') {
-        events.push({ type: 'user.message', sessionId: this.sessionId, text: block.text });
+        events.push({ type: 'user.message', sessionId: this.sessionId, text: block.text, messageId: msg.uuid });
       }
     }
 

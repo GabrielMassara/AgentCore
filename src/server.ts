@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import healthRoutes from './routes/health';
 import sessionRoutes from './routes/sessions.routes';
+import configRoutes from './routes/config.routes';
 
 const server = Fastify({ logger: true });
 
@@ -15,6 +16,7 @@ if (isDev) {
 
 server.register(healthRoutes);
 server.register(sessionRoutes);
+server.register(configRoutes);
 
 const start = async () => {
   try {

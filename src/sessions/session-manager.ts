@@ -46,7 +46,7 @@ function saveSessions() {
 loadSessions();
 
 export function createSession(
-  runtime: 'claude',
+  runtime: 'claude' | 'codex',
   projectPath: string,
   providerSessionId?: string,
   forkedFrom?: string,
@@ -105,7 +105,7 @@ export function deleteSession(id: string): boolean {
   return deleted;
 }
 
-export function updateSession(id: string, patch: Partial<Pick<AgentSession, 'status' | 'providerSessionId'>>): AgentSession | undefined {
+export function updateSession(id: string, patch: Partial<Pick<AgentSession, 'status' | 'providerSessionId' | 'permissionMode' | 'codexSandboxMode' | 'model' | 'usage'>>): AgentSession | undefined {
   const session = sessions.get(id);
 
   if (!session) {

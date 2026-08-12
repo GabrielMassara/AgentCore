@@ -1,14 +1,17 @@
 import { FastifyInstance } from 'fastify';
-import { getSessionMessages, deleteSession as deleteProviderSession, forkSession, tagSession as tagProviderSession, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { createSession, getSession, listSessions, deleteSession, renameSession, tagSession } from '../sessions/session-manager';
+import { getSessionMessages, deleteSession as deleteProviderSession, forkSession, tagSession as tagProviderSession, type SDKMessage, type PermissionMode } from '@anthropic-ai/claude-agent-sdk';
+import { createSession, getSession, listSessions, deleteSession, renameSession, tagSession, updateSession } from '../sessions/session-manager';
 import { ClaudeRuntime } from '../runtimes/claude/claude.runtime';
 import { ClaudeEventMapper } from '../runtimes/claude/claude.mapper';
+import { CodexRuntime } from '../runtimes/codex/codex.runtime';
+import { readCodexHistory } from '../runtimes/codex/codex.history';
+import { AgentRuntime } from '../runtimes/agent-runtime';
 import { subscribe, unsubscribe } from '../events/event-bus';
 import { AgentEvent } from '../events/agent-event';
-import { SessionStatus } from '../sessions/session';
+import { AgentSession, SessionStatus, CodexSandboxMode } from '../sessions/session';
 
 type CreateSessionBody = {
-  runtime: 'claude';
+  runtime: 'claude' | 'codex';
   projectPath: string;
 };
 
@@ -52,12 +55,50 @@ type RejectPermissionBody = {
   reason?: string;
 };
 
+type SetPermissionModeBody = {
+  mode: PermissionMode;
+};
+
+const validPermissionModes: PermissionMode[] = [
+  'default',
+  'acceptEdits',
+  'bypassPermissions',
+  'plan',
+  'dontAsk',
+  'auto',
+];
+
+type SetCodexSandboxModeBody = {
+  mode: CodexSandboxMode;
+};
+
+const validCodexSandboxModes: CodexSandboxMode[] = [
+  'read-only',
+  'workspace-write',
+  'danger-full-access',
+];
+
+type SetModelBody = {
+  model: string | null;
+};
+
+type RewindFilesBody = {
+  userMessageId: string;
+  dryRun?: boolean;
+};
+
 // Mesma regra do server.ts em que o CORS é liberado só em desenvolvimento.
 const isDev = process.env.NODE_ENV !== 'production';
 
-// Instância única do runtime, compartilhada por todas as requisições.
-// O controle de qual sessão está rodando fica dentro do próprio ClaudeRuntime
+// Instância única de cada runtime, compartilhada por todas as requisições.
+// O controle de qual sessão está rodando fica dentro do próprio runtime.
 const claudeRuntime = new ClaudeRuntime();
+const codexRuntime = new CodexRuntime();
+
+// Escolhe a instância de runtime certa para uma sessão de acordo com o campo AgentSession.runtime.
+function runtimeFor(session: AgentSession): AgentRuntime {
+  return session.runtime === 'codex' ? codexRuntime : claudeRuntime;
+}
 
 export default async function sessionRoutes(app: FastifyInstance) {
   // Cria uma sessão nova apenas registro interno
@@ -69,8 +110,7 @@ export default async function sessionRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: '"runtime" and "projectPath" are required' });
     }
 
-    // Por enquanto só existe suporte ao runtime do claude, mas depois vou fazer para outros
-    if (runtime !== 'claude') {
+    if (runtime !== 'claude' && runtime !== 'codex') {
       return reply.code(400).send({ error: `Unsupported runtime: "${runtime}"` });
     }
 
@@ -163,28 +203,54 @@ export default async function sessionRoutes(app: FastifyInstance) {
         return reply.code(404).send({ error: 'Session has no history yet' });
       }
 
-      // Se o registro local existe, usa o providerSessionId dele. Senão, trata o próprio :sessionId como sendo o providerSessionId
-      const providerSessionId = session ? session.providerSessionId! : sessionId;
-
-      const options: { limit?: number; offset?: number } = {};
+      let parsedLimit: number | undefined;
+      let parsedOffset: number | undefined;
 
       if (limit !== undefined) {
-        const parsedLimit = Number(limit);
+        parsedLimit = Number(limit);
 
         if (!Number.isInteger(parsedLimit) || parsedLimit < 1) {
           return reply.code(400).send({ error: '"limit" must be a positive integer' });
         }
-
-        options.limit = parsedLimit;
       }
 
       if (offset !== undefined) {
-        const parsedOffset = Number(offset);
+        parsedOffset = Number(offset);
 
         if (!Number.isInteger(parsedOffset) || parsedOffset < 0) {
           return reply.code(400).send({ error: '"offset" must be a non-negative integer' });
         }
+      }
 
+      // O Codex não guarda a conversa no mesmo lugar que o Claude
+      if (session && session.runtime === 'codex') {
+        const events = readCodexHistory(sessionId, session.providerSessionId!);
+
+        if (!events.length) {
+          return reply.code(404).send({ error: 'Session not found' });
+        }
+
+        const start = parsedOffset ?? 0;
+        const end = parsedLimit !== undefined ? start + parsedLimit : undefined;
+
+        return reply.send({ events: events.slice(start, end) });
+      }
+
+      // Se o registro local existe, usa o providerSessionId dele. Senão, trata o próprio :sessionId como sendo o providerSessionId
+      const providerSessionId = session ? session.providerSessionId! : sessionId;
+
+      const options: { limit?: number; offset?: number; dir?: string } = {};
+
+      // Passa "dir" quando dá pra evitar o fallback pouco confiável da SDK de vasculhar todos os projetos.
+      if (session) {
+        options.dir = session.projectPath;
+      }
+
+      if (parsedLimit !== undefined) {
+        options.limit = parsedLimit;
+      }
+
+      if (parsedOffset !== undefined) {
         options.offset = parsedOffset;
       }
 
@@ -203,6 +269,30 @@ export default async function sessionRoutes(app: FastifyInstance) {
       }
 
       return reply.send({ events });
+    }
+  );
+
+  // Uso acumulado de tokens/custo da sessão, extraído das mensagens "result" da SDK.
+  app.get<{ Params: { sessionId: string } }>(
+    '/v1/sessions/:sessionId/usage',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const session = getSession(sessionId);
+
+      if (!session) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      return reply.send(
+        session.usage ?? {
+          totalCostUsd: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          modelUsage: {},
+        }
+      );
     }
   );
 
@@ -303,7 +393,8 @@ export default async function sessionRoutes(app: FastifyInstance) {
       }
 
       // Espelha a tag do lado do provedor quando já existe uma conversa pra marcar.
-      if (session.providerSessionId) {
+      // Só existe pro Claude, a Codex SDK não expõe nada equivalente
+      if (session.runtime === 'claude' && session.providerSessionId) {
         try {
           await tagProviderSession(session.providerSessionId, tag);
         } catch (err) {
@@ -351,14 +442,14 @@ export default async function sessionRoutes(app: FastifyInstance) {
         return reply.code(409).send({ error: `Session is busy (status: "${session.status}")` });
       }
 
-      // Loga qualquer erro que aconteça durante a execução do Claude em background.
+      // Loga qualquer erro que aconteça durante a execução do agente em background.
       function handleSendMessageError(err: unknown) {
-        request.log.error(err, 'ClaudeRuntime.sendMessage failed');
+        request.log.error(err, 'AgentRuntime.sendMessage failed');
       }
 
-      // A chamada ao Claude vai roda em background
-      // O cliente HTTP vai receber a resposta 202 imediatamente sem esperar o Claude terminar
-      claudeRuntime.sendMessage(session, content).catch(handleSendMessageError);
+      // A chamada ao agente roda em background.
+      // O cliente HTTP vai receber a resposta 202 imediatamente sem esperar o agente terminar
+      runtimeFor(session).sendMessage(session, content).catch(handleSendMessageError);
 
       return reply.code(202).send({ accepted: true });
     }
@@ -430,9 +521,176 @@ export default async function sessionRoutes(app: FastifyInstance) {
       }
 
       // Só sinaliza o cancelamento aqui. depois o catch de sendMessage sinaliza de fato quando a execução realmente parar.
-      await claudeRuntime.cancel(sessionId);
+      await runtimeFor(session).cancel(sessionId);
 
       return reply.code(200).send({ cancelled: true });
+    }
+  );
+
+  // Configura o permission mode de uma sessão. Sempre grava como o padrão usado na próxima
+  // query() (options.permissionMode) se já existe uma execução em andamento, aplica na hora
+  app.post<{ Params: { sessionId: string }; Body: SetPermissionModeBody }>(
+    '/v1/sessions/:sessionId/permission-mode',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const session = getSession(sessionId);
+
+      if (!session) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      // permissionMode é um conceito apenas do Claude
+      if (session.runtime !== 'claude') {
+        return reply.code(400).send({ error: 'permission-mode only applies to Claude sessions' });
+      }
+
+      const mode = request.body && request.body.mode;
+
+      if (!mode || !validPermissionModes.includes(mode)) {
+        return reply.code(400).send({ error: `"mode" must be one of: ${validPermissionModes.join(', ')}` });
+      }
+
+      updateSession(sessionId, { permissionMode: mode });
+
+      let applied: 'live' | 'pending' = 'pending';
+
+      if (session.status === 'running' || session.status === 'waiting_permission') {
+        try {
+          const changedLive = await claudeRuntime.setPermissionMode(sessionId, mode);
+
+          if (changedLive) {
+            applied = 'live';
+          }
+        } catch (err) {
+          request.log.warn(err, 'setPermissionMode: failed to apply live, kept as the session default');
+        }
+      }
+
+      return reply.code(200).send({ mode, applied });
+    }
+  );
+
+  // Configura o sandbox do Codex para uma sessão com suas permisseos
+  app.post<{ Params: { sessionId: string }; Body: SetCodexSandboxModeBody }>(
+    '/v1/sessions/:sessionId/codex-sandbox-mode',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const session = getSession(sessionId);
+
+      if (!session) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      if (session.runtime !== 'codex') {
+        return reply.code(400).send({ error: 'codex-sandbox-mode only applies to Codex sessions' });
+      }
+
+      const mode = request.body && request.body.mode;
+
+      if (!mode || !validCodexSandboxModes.includes(mode)) {
+        return reply.code(400).send({ error: `"mode" must be one of: ${validCodexSandboxModes.join(', ')}` });
+      }
+
+      updateSession(sessionId, { codexSandboxMode: mode });
+
+      return reply.code(200).send({ mode, applied: 'pending' });
+    }
+  );
+
+  // Configura o modelo de uma sessão. Mesmo padrão do /permission-mode: sempre grava como o
+  // padrão usado na próxima query() (options.model), e aplica na hora também via
+  // Query.setModel quando já existe uma execução em andamento
+  app.post<{ Params: { sessionId: string }; Body: SetModelBody }>(
+    '/v1/sessions/:sessionId/model',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const session = getSession(sessionId);
+
+      if (!session) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      const body = request.body;
+
+      if (!body || !('model' in body)) {
+        return reply.code(400).send({ error: '"model" is required (use null to reset to the CLI default)' });
+      }
+
+      let model = body.model;
+
+      if (typeof model === 'string') {
+        model = model.trim() || null;
+      } else if (model !== null) {
+        return reply.code(400).send({ error: '"model" must be a string or null' });
+      }
+
+      updateSession(sessionId, { model: model === null ? undefined : model });
+
+      let applied: 'live' | 'pending' = 'pending';
+
+      if (session.status === 'running' || session.status === 'waiting_permission') {
+        try {
+          const changedLive = await claudeRuntime.setModel(sessionId, model === null ? undefined : model);
+
+          if (changedLive) {
+            applied = 'live';
+          }
+        } catch (err) {
+          request.log.warn(err, 'setModel: failed to apply live, kept as the session default');
+        }
+      }
+
+      return reply.code(200).send({ model, applied });
+    }
+  );
+
+  // Desfaz as edições de arquivo que o Claude fez até uma mensagem de usuário específica.
+  app.post<{ Params: { sessionId: string }; Body: RewindFilesBody }>(
+    '/v1/sessions/:sessionId/rewind',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const session = getSession(sessionId);
+
+      if (!session) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      const body = request.body;
+      const userMessageId = body && body.userMessageId;
+
+      if (!userMessageId || typeof userMessageId !== 'string') {
+        return reply.code(400).send({ error: '"userMessageId" is required' });
+      }
+
+      let dryRun: boolean | undefined;
+
+      if (body && 'dryRun' in body && body.dryRun !== undefined) {
+        if (typeof body.dryRun !== 'boolean') {
+          return reply.code(400).send({ error: '"dryRun" must be a boolean' });
+        }
+
+        dryRun = body.dryRun;
+      }
+
+      // Mesma regra do /fork: só existe conversa do lado do provedor depois da primeira mensagem.
+      if (!session.providerSessionId) {
+        return reply.code(409).send({ error: 'Session has no conversation to rewind yet' });
+      }
+
+      let result;
+
+      try {
+        result = await claudeRuntime.rewindFiles(session, userMessageId, dryRun !== undefined ? { dryRun } : undefined);
+      } catch (err) {
+        request.log.error(err, 'rewindFiles: failed to rewind files');
+        return reply.code(502).send({ error: 'Failed to rewind files' });
+      }
+
+      if (!result) {
+        return reply.code(409).send({ error: 'Session has no conversation to rewind yet' });
+      }
+
+      return reply.code(200).send(result);
     }
   );
 
