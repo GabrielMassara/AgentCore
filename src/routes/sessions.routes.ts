@@ -351,6 +351,11 @@ export default async function sessionRoutes(app: FastifyInstance) {
         return reply.code(404).send({ error: 'Session not found' });
       }
 
+      // codex nao tem forkSession
+      if (session.runtime !== 'claude') {
+        return reply.code(400).send({ error: 'fork not supported for this session' });
+      }
+
       // Só existe conversa do lado do provedor pra ramificar depois da primeira mensagem.
       if (!session.providerSessionId) {
         return reply.code(409).send({ error: 'Session has no conversation to fork yet' });
