@@ -325,8 +325,8 @@ export default async function sessionRoutes(app: FastifyInstance) {
         return reply.code(409).send({ error: `Cannot delete session while it is busy (status: "${session.status}")` });
       }
 
-      // Se a sessão nunca chegou a falar com o agente não há conversa do lado do provedor para apagar.
-      if (session.providerSessionId) {
+      // Só existe pro Claude, a Codex SDK não tem nada equivalente
+      if (session.runtime === 'claude' && session.providerSessionId) {
         try {
           await deleteProviderSession(session.providerSessionId);
         } catch (err) {
