@@ -9,7 +9,7 @@ import {
   type PermissionMode,
   type RewindFilesResult,
 } from '@anthropic-ai/claude-agent-sdk';
-import { AgentRuntime } from '../agent-runtime';
+import { AgentRuntime, RuntimeModel } from '../agent-runtime';
 import { AgentSession, SessionStatus, type SessionUsage } from '../../sessions/session';
 import { updateSession } from '../../sessions/session-manager';
 import { publish } from '../../events/event-bus';
@@ -268,6 +268,27 @@ export class ClaudeRuntime implements AgentRuntime {
 
     await activeQuery.setModel(model);
     return true;
+  }
+
+  // Pergunta pra própria CLI quais modelos ela suporta agora
+  async listModels(): Promise<RuntimeModel[]> {
+    const abortController = new AbortController();
+    const q = query({
+      prompt: idleStream(abortController.signal),
+      options: { cwd: process.cwd(), abortController },
+    });
+
+    try {
+      const models = await q.supportedModels();
+
+      return models.map((model) => ({
+        id: model.value,
+        displayName: model.displayName,
+        description: model.description,
+      }));
+    } finally {
+      abortController.abort();
+    }
   }
 
   // Desfaz as edições de arquivo feitas pelo Claude, restaurando o estado de uma mensagem de usuário específica.
