@@ -29,6 +29,15 @@ export type SessionUsage = {
   modelUsage: Record<string, ModelUsageTotals>;
 };
 
+// Soma de todos os "turn.completed.usage" da SDK do Codex ao longo da vida da sessão
+export type CodexSessionUsage = {
+  inputTokens: number;
+  cachedInputTokens: number;
+  cacheWriteInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+};
+
 export type AgentSession = {
   id: string;
   runtime: 'claude' | 'codex';
@@ -44,4 +53,5 @@ export type AgentSession = {
   codexSandboxMode?: CodexSandboxMode | undefined;
   model?: string | undefined;
   usage?: SessionUsage;
+  codexUsage?: CodexSessionUsage;
 };

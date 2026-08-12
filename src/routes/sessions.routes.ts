@@ -283,6 +283,19 @@ export default async function sessionRoutes(app: FastifyInstance) {
         return reply.code(404).send({ error: 'Session not found' });
       }
 
+      // Preenche os valores da analise
+      if (session.runtime === 'codex') {
+        return reply.send(
+          session.codexUsage ?? {
+            inputTokens: 0,
+            cachedInputTokens: 0,
+            cacheWriteInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+          }
+        );
+      }
+
       return reply.send(
         session.usage ?? {
           totalCostUsd: 0,

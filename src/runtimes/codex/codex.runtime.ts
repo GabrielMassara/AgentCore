@@ -1,7 +1,7 @@
 import { spawn } from 'child_process';
-import type { Codex as CodexClient, ThreadOptions } from '@openai/codex-sdk';
+import type { Codex as CodexClient, ThreadOptions, Usage } from '@openai/codex-sdk';
 import { AgentRuntime, RuntimeModel } from '../agent-runtime';
-import { AgentSession } from '../../sessions/session';
+import { AgentSession, CodexSessionUsage } from '../../sessions/session';
 import { updateSession } from '../../sessions/session-manager';
 import { publish } from '../../events/event-bus';
 import { CodexEventMapper } from './codex.mapper';
@@ -68,6 +68,17 @@ function getErrorMessage(err: unknown): string {
   return 'Unknown error';
 }
 
+// Soma o "usage" de um turn.completed ao acumulado anterior da sessão
+function accumulateCodexUsage(existing: CodexSessionUsage | undefined, usage: Usage): CodexSessionUsage {
+  return {
+    inputTokens: (existing?.inputTokens ?? 0) + usage.input_tokens,
+    cachedInputTokens: (existing?.cachedInputTokens ?? 0) + usage.cached_input_tokens,
+    cacheWriteInputTokens: (existing?.cacheWriteInputTokens ?? 0) + usage.cache_write_input_tokens,
+    outputTokens: (existing?.outputTokens ?? 0) + usage.output_tokens,
+    reasoningOutputTokens: (existing?.reasoningOutputTokens ?? 0) + usage.reasoning_output_tokens,
+  };
+}
+
 export class CodexRuntime implements AgentRuntime {
   async sendMessage(session: AgentSession, content: string): Promise<void> {
     const abortController = new AbortController();
@@ -108,7 +119,10 @@ export class CodexRuntime implements AgentRuntime {
         }
 
         if (event.type === 'turn.completed') {
-          updateSession(session.id, { status: 'completed' });
+          updateSession(session.id, {
+            status: 'completed',
+            codexUsage: accumulateCodexUsage(session.codexUsage, event.usage),
+          });
           finished = true;
         }
 
