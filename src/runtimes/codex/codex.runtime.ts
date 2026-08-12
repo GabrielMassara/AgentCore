@@ -1,5 +1,6 @@
+import { spawn } from 'child_process';
 import type { Codex as CodexClient, ThreadOptions } from '@openai/codex-sdk';
-import { AgentRuntime } from '../agent-runtime';
+import { AgentRuntime, RuntimeModel } from '../agent-runtime';
 import { AgentSession } from '../../sessions/session';
 import { updateSession } from '../../sessions/session-manager';
 import { publish } from '../../events/event-bus';
@@ -14,6 +15,46 @@ function getCodex(): Promise<CodexClient> {
   }
 
   return codexPromise;
+}
+
+type CodexModelCatalogEntry = {
+  slug: string;
+  display_name: string;
+  description?: string;
+  visibility: string;
+};
+
+// Roda "codex debug models" e devolve o catálogo bruto que o binário conhece
+function runCodexDebugModels(): Promise<{ models: CodexModelCatalogEntry[] }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('codex', ['debug', 'models'], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk;
+    });
+
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+    });
+
+    child.on('error', reject);
+
+    child.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`"codex debug models" exited with code ${code}: ${stderr.trim()}`));
+        return;
+      }
+
+      try {
+        resolve(JSON.parse(stdout));
+      } catch (err) {
+        reject(new Error(`Failed to parse "codex debug models" output: ${(err as Error).message}`));
+      }
+    });
+  });
 }
 
 // Guarda para cada sessão EM EXECUÇÃO, o AbortController do turno em andamento
@@ -95,5 +136,18 @@ export class CodexRuntime implements AgentRuntime {
   async cancel(sessionId: string): Promise<void> {
     // Só sinaliza o abort aqui
     activeAbortControllers.get(sessionId)?.abort();
+  }
+
+  // Pergunta pro binário quais modelos ele suporta
+  async listModels(): Promise<RuntimeModel[]> {
+    const catalog = await runCodexDebugModels();
+
+    return catalog.models
+      .filter((model) => model.visibility === 'list')
+      .map((model) => ({
+        id: model.slug,
+        displayName: model.display_name,
+        description: model.description,
+      }));
   }
 }
