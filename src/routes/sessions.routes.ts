@@ -673,6 +673,11 @@ export default async function sessionRoutes(app: FastifyInstance) {
         return reply.code(404).send({ error: 'Session not found' });
       }
 
+      // codex nao tem sistema de rewind
+      if (session.runtime !== 'claude') {
+        return reply.code(400).send({ error: 'rewind not supported for this session' });
+      }
+
       const body = request.body;
       const userMessageId = body && body.userMessageId;
 
