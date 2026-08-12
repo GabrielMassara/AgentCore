@@ -8,7 +8,7 @@ import { readCodexHistory } from '../runtimes/codex/codex.history';
 import { AgentRuntime } from '../runtimes/agent-runtime';
 import { subscribe, unsubscribe } from '../events/event-bus';
 import { AgentEvent } from '../events/agent-event';
-import { AgentSession, SessionStatus, CodexSandboxMode } from '../sessions/session';
+import { AgentSession, SessionStatus, CodexSandboxMode, CodexReasoningEffort } from '../sessions/session';
 
 type CreateSessionBody = {
   runtime: 'claude' | 'codex';
@@ -76,6 +76,18 @@ const validCodexSandboxModes: CodexSandboxMode[] = [
   'read-only',
   'workspace-write',
   'danger-full-access',
+];
+
+type SetCodexReasoningEffortBody = {
+  effort: CodexReasoningEffort;
+};
+
+const validCodexReasoningEfforts: CodexReasoningEffort[] = [
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
 ];
 
 type SetModelBody = {
@@ -612,6 +624,33 @@ export default async function sessionRoutes(app: FastifyInstance) {
       updateSession(sessionId, { codexSandboxMode: mode });
 
       return reply.code(200).send({ mode, applied: 'pending' });
+    }
+  );
+
+  // Configura o esforço de raciocínio do Codex para uma sessão
+  app.post<{ Params: { sessionId: string }; Body: SetCodexReasoningEffortBody }>(
+    '/v1/sessions/:sessionId/codex-reasoning-effort',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const session = getSession(sessionId);
+
+      if (!session) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      if (session.runtime !== 'codex') {
+        return reply.code(400).send({ error: 'codex-reasoning-effort only applies to Codex sessions' });
+      }
+
+      const effort = request.body && request.body.effort;
+
+      if (!effort || !validCodexReasoningEfforts.includes(effort)) {
+        return reply.code(400).send({ error: `"effort" must be one of: ${validCodexReasoningEfforts.join(', ')}` });
+      }
+
+      updateSession(sessionId, { codexReasoningEffort: effort });
+
+      return reply.code(200).send({ effort, applied: 'pending' });
     }
   );
 

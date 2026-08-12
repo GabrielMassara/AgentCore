@@ -100,6 +100,10 @@ export class CodexRuntime implements AgentRuntime {
     threadOptions.sandboxMode = session.codexSandboxMode ?? 'workspace-write';
     threadOptions.approvalPolicy = 'never';
 
+    if (session.codexReasoningEffort) {
+      threadOptions.modelReasoningEffort = session.codexReasoningEffort;
+    }
+
     const codex = await getCodex();
 
     // Se a sessão já tem um providerSessionId usa ela em vez de começar uma conversa nova

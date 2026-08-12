@@ -3,6 +3,9 @@ import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk';
 // Sandbox do Codex para a sessão
 export type CodexSandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access';
 
+// Esforço de raciocínio do modelo, só pro Codex
+export type CodexReasoningEffort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+
 export type SessionStatus =
   | 'ready'
   | 'running'
@@ -51,6 +54,7 @@ export type AgentSession = {
   tag?: string;
   permissionMode?: PermissionMode | undefined;
   codexSandboxMode?: CodexSandboxMode | undefined;
+  codexReasoningEffort?: CodexReasoningEffort | undefined;
   model?: string | undefined;
   usage?: SessionUsage;
   codexUsage?: CodexSessionUsage;
