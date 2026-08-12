@@ -1,5 +1,8 @@
 import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk';
 
+// Sandbox do Codex para a sessão
+export type CodexSandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access';
+
 export type SessionStatus =
   | 'ready'
   | 'running'
@@ -38,6 +41,7 @@ export type AgentSession = {
   forkedFromMessageId?: string;
   tag?: string;
   permissionMode?: PermissionMode | undefined;
+  codexSandboxMode?: CodexSandboxMode | undefined;
   model?: string | undefined;
   usage?: SessionUsage;
 };

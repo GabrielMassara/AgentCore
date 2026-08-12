@@ -4,10 +4,11 @@ import { createSession, getSession, listSessions, deleteSession, renameSession, 
 import { ClaudeRuntime } from '../runtimes/claude/claude.runtime';
 import { ClaudeEventMapper } from '../runtimes/claude/claude.mapper';
 import { CodexRuntime } from '../runtimes/codex/codex.runtime';
+import { readCodexHistory } from '../runtimes/codex/codex.history';
 import { AgentRuntime } from '../runtimes/agent-runtime';
 import { subscribe, unsubscribe } from '../events/event-bus';
 import { AgentEvent } from '../events/agent-event';
-import { AgentSession, SessionStatus } from '../sessions/session';
+import { AgentSession, SessionStatus, CodexSandboxMode } from '../sessions/session';
 
 type CreateSessionBody = {
   runtime: 'claude' | 'codex';
@@ -65,6 +66,16 @@ const validPermissionModes: PermissionMode[] = [
   'plan',
   'dontAsk',
   'auto',
+];
+
+type SetCodexSandboxModeBody = {
+  mode: CodexSandboxMode;
+};
+
+const validCodexSandboxModes: CodexSandboxMode[] = [
+  'read-only',
+  'workspace-write',
+  'danger-full-access',
 ];
 
 type SetModelBody = {
@@ -192,6 +203,39 @@ export default async function sessionRoutes(app: FastifyInstance) {
         return reply.code(404).send({ error: 'Session has no history yet' });
       }
 
+      let parsedLimit: number | undefined;
+      let parsedOffset: number | undefined;
+
+      if (limit !== undefined) {
+        parsedLimit = Number(limit);
+
+        if (!Number.isInteger(parsedLimit) || parsedLimit < 1) {
+          return reply.code(400).send({ error: '"limit" must be a positive integer' });
+        }
+      }
+
+      if (offset !== undefined) {
+        parsedOffset = Number(offset);
+
+        if (!Number.isInteger(parsedOffset) || parsedOffset < 0) {
+          return reply.code(400).send({ error: '"offset" must be a non-negative integer' });
+        }
+      }
+
+      // O Codex não guarda a conversa no mesmo lugar que o Claude
+      if (session && session.runtime === 'codex') {
+        const events = readCodexHistory(sessionId, session.providerSessionId!);
+
+        if (!events.length) {
+          return reply.code(404).send({ error: 'Session not found' });
+        }
+
+        const start = parsedOffset ?? 0;
+        const end = parsedLimit !== undefined ? start + parsedLimit : undefined;
+
+        return reply.send({ events: events.slice(start, end) });
+      }
+
       // Se o registro local existe, usa o providerSessionId dele. Senão, trata o próprio :sessionId como sendo o providerSessionId
       const providerSessionId = session ? session.providerSessionId! : sessionId;
 
@@ -202,23 +246,11 @@ export default async function sessionRoutes(app: FastifyInstance) {
         options.dir = session.projectPath;
       }
 
-      if (limit !== undefined) {
-        const parsedLimit = Number(limit);
-
-        if (!Number.isInteger(parsedLimit) || parsedLimit < 1) {
-          return reply.code(400).send({ error: '"limit" must be a positive integer' });
-        }
-
+      if (parsedLimit !== undefined) {
         options.limit = parsedLimit;
       }
 
-      if (offset !== undefined) {
-        const parsedOffset = Number(offset);
-
-        if (!Number.isInteger(parsedOffset) || parsedOffset < 0) {
-          return reply.code(400).send({ error: '"offset" must be a non-negative integer' });
-        }
-
+      if (parsedOffset !== undefined) {
         options.offset = parsedOffset;
       }
 
@@ -507,6 +539,11 @@ export default async function sessionRoutes(app: FastifyInstance) {
         return reply.code(404).send({ error: 'Session not found' });
       }
 
+      // permissionMode é um conceito apenas do Claude
+      if (session.runtime !== 'claude') {
+        return reply.code(400).send({ error: 'permission-mode only applies to Claude sessions' });
+      }
+
       const mode = request.body && request.body.mode;
 
       if (!mode || !validPermissionModes.includes(mode)) {
@@ -530,6 +567,33 @@ export default async function sessionRoutes(app: FastifyInstance) {
       }
 
       return reply.code(200).send({ mode, applied });
+    }
+  );
+
+  // Configura o sandbox do Codex para uma sessão com suas permisseos
+  app.post<{ Params: { sessionId: string }; Body: SetCodexSandboxModeBody }>(
+    '/v1/sessions/:sessionId/codex-sandbox-mode',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const session = getSession(sessionId);
+
+      if (!session) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      if (session.runtime !== 'codex') {
+        return reply.code(400).send({ error: 'codex-sandbox-mode only applies to Codex sessions' });
+      }
+
+      const mode = request.body && request.body.mode;
+
+      if (!mode || !validCodexSandboxModes.includes(mode)) {
+        return reply.code(400).send({ error: `"mode" must be one of: ${validCodexSandboxModes.join(', ')}` });
+      }
+
+      updateSession(sessionId, { codexSandboxMode: mode });
+
+      return reply.code(200).send({ mode, applied: 'pending' });
     }
   );
 

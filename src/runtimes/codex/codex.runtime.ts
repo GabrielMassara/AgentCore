@@ -11,7 +11,7 @@ let codexPromise: Promise<CodexClient> | undefined;
 
 function getCodex(): Promise<CodexClient> {
   if (!codexPromise) {
-    codexPromise = import('@openai/codex-sdk').then((mod) => new mod.Codex());
+    codexPromise = import('@openai/codex-sdk').then((mod) => new mod.Codex({ codexPathOverride: 'codex' }));
   }
 
   return codexPromise;
@@ -78,11 +78,16 @@ export class CodexRuntime implements AgentRuntime {
 
     const eventMapper = new CodexEventMapper(session.id);
 
-    const threadOptions: ThreadOptions = { workingDirectory: session.projectPath };
+    // Sem isso, "codex exec" recusa rodar em qualquer projectPath que não seja um repositório git já confiado
+    const threadOptions: ThreadOptions = { workingDirectory: session.projectPath, skipGitRepoCheck: true };
 
     if (session.model) {
       threadOptions.model = session.model;
     }
+
+    // Sem isso o CLI cai no próprio default (sandbox "read-only"), que barra qualquer escrita em disco
+    threadOptions.sandboxMode = session.codexSandboxMode ?? 'workspace-write';
+    threadOptions.approvalPolicy = 'never';
 
     const codex = await getCodex();
 
