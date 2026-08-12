@@ -233,6 +233,30 @@ export default async function sessionRoutes(app: FastifyInstance) {
     }
   );
 
+  // Uso acumulado de tokens/custo da sessão, extraído das mensagens "result" da SDK.
+  app.get<{ Params: { sessionId: string } }>(
+    '/v1/sessions/:sessionId/usage',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const session = getSession(sessionId);
+
+      if (!session) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      return reply.send(
+        session.usage ?? {
+          totalCostUsd: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          modelUsage: {},
+        }
+      );
+    }
+  );
+
   // Remove uma sessão: registro local e a conversa correspondente do lado do provedor
   app.delete<{ Params: { sessionId: string } }>(
     '/v1/sessions/:sessionId',

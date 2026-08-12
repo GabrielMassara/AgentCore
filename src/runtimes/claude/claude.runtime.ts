@@ -3,13 +3,14 @@ import {
   query,
   type Query,
   type SDKMessage,
+  type SDKResultMessage,
   type SDKUserMessage,
   type PermissionResult,
   type PermissionMode,
   type RewindFilesResult,
 } from '@anthropic-ai/claude-agent-sdk';
 import { AgentRuntime } from '../agent-runtime';
-import { AgentSession, SessionStatus } from '../../sessions/session';
+import { AgentSession, SessionStatus, type SessionUsage } from '../../sessions/session';
 import { updateSession } from '../../sessions/session-manager';
 import { publish } from '../../events/event-bus';
 import { ClaudeEventMapper } from './claude.mapper';
@@ -52,6 +53,40 @@ type PendingPermission = {
 };
 
 const pendingPermissions = new Map<string, PendingPermission>();
+
+// Soma o total_cost_usd/usage/modelUsage de uma mensagem "result" ao acumulado anterior da sessão,
+// já que esses valores começam do zero a cada nova Query
+function accumulateUsage(existing: SessionUsage | undefined, result: SDKResultMessage): SessionUsage {
+  const usage: SessionUsage = existing
+    ? { ...existing, modelUsage: { ...existing.modelUsage } }
+    : { totalCostUsd: 0, inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, modelUsage: {} };
+
+  usage.totalCostUsd += result.total_cost_usd;
+  usage.inputTokens += result.usage.input_tokens;
+  usage.outputTokens += result.usage.output_tokens;
+  usage.cacheReadInputTokens += result.usage.cache_read_input_tokens;
+  usage.cacheCreationInputTokens += result.usage.cache_creation_input_tokens;
+
+  for (const [model, modelUsage] of Object.entries(result.modelUsage)) {
+    const totals = usage.modelUsage[model] ?? {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      costUsd: 0,
+    };
+
+    usage.modelUsage[model] = {
+      inputTokens: totals.inputTokens + modelUsage.inputTokens,
+      outputTokens: totals.outputTokens + modelUsage.outputTokens,
+      cacheReadInputTokens: totals.cacheReadInputTokens + modelUsage.cacheReadInputTokens,
+      cacheCreationInputTokens: totals.cacheCreationInputTokens + modelUsage.cacheCreationInputTokens,
+      costUsd: totals.costUsd + modelUsage.costUSD,
+    };
+  }
+
+  return usage;
+}
 
 // Pega a mensagem de um erro genérico, sem quebrar se err não for um Error de verdade.
 function getErrorMessage(err: unknown): string {
@@ -169,7 +204,7 @@ export class ClaudeRuntime implements AgentRuntime {
             status = 'error';
           }
 
-          updateSession(session.id, { status });
+          updateSession(session.id, { status, usage: accumulateUsage(session.usage, sdkMsg) });
 
           if (status === 'completed') {
             publish({ type: 'agent.completed', sessionId: session.id });

@@ -8,6 +8,24 @@ export type SessionStatus =
   | 'cancelled'
   | 'error';
 
+export type ModelUsageTotals = {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  costUsd: number;
+};
+
+// Soma de todos os resultados da SDK ao longo da vida da sessão
+export type SessionUsage = {
+  totalCostUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  modelUsage: Record<string, ModelUsageTotals>;
+};
+
 export type AgentSession = {
   id: string;
   runtime: 'claude';
@@ -21,4 +39,5 @@ export type AgentSession = {
   tag?: string;
   permissionMode?: PermissionMode | undefined;
   model?: string | undefined;
+  usage?: SessionUsage;
 };
