@@ -112,6 +112,10 @@ export class CodexRuntime implements AgentRuntime {
       threadOptions.webSearchEnabled = session.codexWebSearchEnabled;
     }
 
+    if (session.codexAdditionalDirectories?.length) {
+      threadOptions.additionalDirectories = session.codexAdditionalDirectories;
+    }
+
     const codex = await getCodex();
 
     // Se a sessão já tem um providerSessionId usa ela em vez de começar uma conversa nova

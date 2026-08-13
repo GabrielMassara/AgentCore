@@ -60,6 +60,7 @@ export type AgentSession = {
   codexReasoningEffort?: CodexReasoningEffort | undefined;
   codexWebSearchMode?: CodexWebSearchMode | undefined;
   codexWebSearchEnabled?: boolean | undefined;
+  codexAdditionalDirectories?: string[] | undefined;
   model?: string | undefined;
   usage?: SessionUsage;
   codexUsage?: CodexSessionUsage;

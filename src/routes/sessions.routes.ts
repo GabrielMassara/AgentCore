@@ -1,4 +1,6 @@
 import { FastifyInstance } from 'fastify';
+import { existsSync, statSync } from 'fs';
+import { isAbsolute } from 'path';
 import { getSessionMessages, deleteSession as deleteProviderSession, forkSession, tagSession as tagProviderSession, type SDKMessage, type PermissionMode } from '@anthropic-ai/claude-agent-sdk';
 import { createSession, getSession, listSessions, deleteSession, renameSession, tagSession, updateSession } from '../sessions/session-manager';
 import { ClaudeRuntime } from '../runtimes/claude/claude.runtime';
@@ -100,6 +102,33 @@ const validCodexWebSearchModes: CodexWebSearchMode[] = [
   'cached',
   'live',
 ];
+
+type SetCodexAdditionalDirectoriesBody = {
+  directories: string[];
+};
+
+// Verifica se o caminho fornecido é valido e existe
+function validateAdditionalDirectories(directories: unknown): string | null {
+  if (!Array.isArray(directories)) {
+    return '"directories" must be an array of strings';
+  }
+
+  for (const dir of directories) {
+    if (typeof dir !== 'string' || !dir.trim()) {
+      return '"directories" must contain only non-empty strings';
+    }
+
+    if (!isAbsolute(dir)) {
+      return `"${dir}" must be an absolute path`;
+    }
+
+    if (!existsSync(dir) || !statSync(dir).isDirectory()) {
+      return `"${dir}" does not exist or is not a directory`;
+    }
+  }
+
+  return null;
+}
 
 type SetModelBody = {
   model: string | null;
@@ -707,6 +736,35 @@ export default async function sessionRoutes(app: FastifyInstance) {
       updateSession(sessionId, patch);
 
       return reply.code(200).send({ mode: mode ?? session.codexWebSearchMode, enabled: enabled ?? session.codexWebSearchEnabled, applied: 'pending' });
+    }
+  );
+
+  // Configura pastas extras fora de projectPath que o Codex pode acessar
+  app.post<{ Params: { sessionId: string }; Body: SetCodexAdditionalDirectoriesBody }>(
+    '/v1/sessions/:sessionId/codex-additional-directories',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const session = getSession(sessionId);
+
+      if (!session) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      if (session.runtime !== 'codex') {
+        return reply.code(400).send({ error: 'codex-additional-directories only applies to Codex sessions' });
+      }
+
+      const directories = request.body && request.body.directories;
+
+      const validationError = validateAdditionalDirectories(directories);
+
+      if (validationError) {
+        return reply.code(400).send({ error: validationError });
+      }
+
+      updateSession(sessionId, { codexAdditionalDirectories: directories as string[] });
+
+      return reply.code(200).send({ directories, applied: 'pending' });
     }
   );
 
