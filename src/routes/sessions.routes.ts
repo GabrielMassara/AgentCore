@@ -1,4 +1,6 @@
 import { FastifyInstance } from 'fastify';
+import { existsSync, statSync } from 'fs';
+import { isAbsolute } from 'path';
 import { getSessionMessages, deleteSession as deleteProviderSession, forkSession, tagSession as tagProviderSession, type SDKMessage, type PermissionMode } from '@anthropic-ai/claude-agent-sdk';
 import { createSession, getSession, listSessions, deleteSession, renameSession, tagSession, updateSession } from '../sessions/session-manager';
 import { ClaudeRuntime } from '../runtimes/claude/claude.runtime';
@@ -8,7 +10,7 @@ import { readCodexHistory } from '../runtimes/codex/codex.history';
 import { AgentRuntime } from '../runtimes/agent-runtime';
 import { subscribe, unsubscribe } from '../events/event-bus';
 import { AgentEvent } from '../events/agent-event';
-import { AgentSession, SessionStatus, CodexSandboxMode } from '../sessions/session';
+import { AgentSession, SessionStatus, CodexSandboxMode, CodexReasoningEffort, CodexWebSearchMode } from '../sessions/session';
 
 type CreateSessionBody = {
   runtime: 'claude' | 'codex';
@@ -77,6 +79,56 @@ const validCodexSandboxModes: CodexSandboxMode[] = [
   'workspace-write',
   'danger-full-access',
 ];
+
+type SetCodexReasoningEffortBody = {
+  effort: CodexReasoningEffort;
+};
+
+const validCodexReasoningEfforts: CodexReasoningEffort[] = [
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+];
+
+type SetCodexWebSearchBody = {
+  mode?: CodexWebSearchMode;
+  enabled?: boolean;
+};
+
+const validCodexWebSearchModes: CodexWebSearchMode[] = [
+  'disabled',
+  'cached',
+  'live',
+];
+
+type SetCodexAdditionalDirectoriesBody = {
+  directories: string[];
+};
+
+// Verifica se o caminho fornecido é valido e existe
+function validateAdditionalDirectories(directories: unknown): string | null {
+  if (!Array.isArray(directories)) {
+    return '"directories" must be an array of strings';
+  }
+
+  for (const dir of directories) {
+    if (typeof dir !== 'string' || !dir.trim()) {
+      return '"directories" must contain only non-empty strings';
+    }
+
+    if (!isAbsolute(dir)) {
+      return `"${dir}" must be an absolute path`;
+    }
+
+    if (!existsSync(dir) || !statSync(dir).isDirectory()) {
+      return `"${dir}" does not exist or is not a directory`;
+    }
+  }
+
+  return null;
+}
 
 type SetModelBody = {
   model: string | null;
@@ -283,6 +335,19 @@ export default async function sessionRoutes(app: FastifyInstance) {
         return reply.code(404).send({ error: 'Session not found' });
       }
 
+      // Preenche os valores da analise
+      if (session.runtime === 'codex') {
+        return reply.send(
+          session.codexUsage ?? {
+            inputTokens: 0,
+            cachedInputTokens: 0,
+            cacheWriteInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+          }
+        );
+      }
+
       return reply.send(
         session.usage ?? {
           totalCostUsd: 0,
@@ -312,8 +377,8 @@ export default async function sessionRoutes(app: FastifyInstance) {
         return reply.code(409).send({ error: `Cannot delete session while it is busy (status: "${session.status}")` });
       }
 
-      // Se a sessão nunca chegou a falar com o agente não há conversa do lado do provedor para apagar.
-      if (session.providerSessionId) {
+      // Só existe pro Claude, a Codex SDK não tem nada equivalente
+      if (session.runtime === 'claude' && session.providerSessionId) {
         try {
           await deleteProviderSession(session.providerSessionId);
         } catch (err) {
@@ -336,6 +401,11 @@ export default async function sessionRoutes(app: FastifyInstance) {
 
       if (!session) {
         return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      // codex nao tem forkSession
+      if (session.runtime !== 'claude') {
+        return reply.code(400).send({ error: 'fork not supported for this session' });
       }
 
       // Só existe conversa do lado do provedor pra ramificar depois da primeira mensagem.
@@ -597,6 +667,107 @@ export default async function sessionRoutes(app: FastifyInstance) {
     }
   );
 
+  // Configura o esforço de raciocínio do Codex para uma sessão
+  app.post<{ Params: { sessionId: string }; Body: SetCodexReasoningEffortBody }>(
+    '/v1/sessions/:sessionId/codex-reasoning-effort',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const session = getSession(sessionId);
+
+      if (!session) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      if (session.runtime !== 'codex') {
+        return reply.code(400).send({ error: 'codex-reasoning-effort only applies to Codex sessions' });
+      }
+
+      const effort = request.body && request.body.effort;
+
+      if (!effort || !validCodexReasoningEfforts.includes(effort)) {
+        return reply.code(400).send({ error: `"effort" must be one of: ${validCodexReasoningEfforts.join(', ')}` });
+      }
+
+      updateSession(sessionId, { codexReasoningEffort: effort });
+
+      return reply.code(200).send({ effort, applied: 'pending' });
+    }
+  );
+
+  // Configura a busca na web do Codex para uma sessão
+  app.post<{ Params: { sessionId: string }; Body: SetCodexWebSearchBody }>(
+    '/v1/sessions/:sessionId/codex-web-search',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const session = getSession(sessionId);
+
+      if (!session) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      if (session.runtime !== 'codex') {
+        return reply.code(400).send({ error: 'codex-web-search only applies to Codex sessions' });
+      }
+
+      const { mode, enabled } = request.body ?? {};
+
+      if (mode === undefined && enabled === undefined) {
+        return reply.code(400).send({ error: 'must provide "mode" and/or "enabled"' });
+      }
+
+      if (mode !== undefined && !validCodexWebSearchModes.includes(mode)) {
+        return reply.code(400).send({ error: `"mode" must be one of: ${validCodexWebSearchModes.join(', ')}` });
+      }
+
+      if (enabled !== undefined && typeof enabled !== 'boolean') {
+        return reply.code(400).send({ error: '"enabled" must be a boolean' });
+      }
+
+      const patch: { codexWebSearchMode?: CodexWebSearchMode; codexWebSearchEnabled?: boolean } = {};
+
+      if (mode !== undefined) {
+        patch.codexWebSearchMode = mode;
+      }
+
+      if (enabled !== undefined) {
+        patch.codexWebSearchEnabled = enabled;
+      }
+
+      updateSession(sessionId, patch);
+
+      return reply.code(200).send({ mode: mode ?? session.codexWebSearchMode, enabled: enabled ?? session.codexWebSearchEnabled, applied: 'pending' });
+    }
+  );
+
+  // Configura pastas extras fora de projectPath que o Codex pode acessar
+  app.post<{ Params: { sessionId: string }; Body: SetCodexAdditionalDirectoriesBody }>(
+    '/v1/sessions/:sessionId/codex-additional-directories',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const session = getSession(sessionId);
+
+      if (!session) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      if (session.runtime !== 'codex') {
+        return reply.code(400).send({ error: 'codex-additional-directories only applies to Codex sessions' });
+      }
+
+      const directories = request.body && request.body.directories;
+
+      const validationError = validateAdditionalDirectories(directories);
+
+      if (validationError) {
+        return reply.code(400).send({ error: validationError });
+      }
+
+      updateSession(sessionId, { codexAdditionalDirectories: directories as string[] });
+
+      return reply.code(200).send({ directories, applied: 'pending' });
+    }
+  );
+
   // Configura o modelo de uma sessão. Mesmo padrão do /permission-mode: sempre grava como o
   // padrão usado na próxima query() (options.model), e aplica na hora também via
   // Query.setModel quando já existe uma execução em andamento
@@ -628,7 +799,8 @@ export default async function sessionRoutes(app: FastifyInstance) {
 
       let applied: 'live' | 'pending' = 'pending';
 
-      if (session.status === 'running' || session.status === 'waiting_permission') {
+      // Só o Claude tem um canal aberto pra aplicar isso numa execução em andamento
+      if (session.runtime === 'claude' && (session.status === 'running' || session.status === 'waiting_permission')) {
         try {
           const changedLive = await claudeRuntime.setModel(sessionId, model === null ? undefined : model);
 
@@ -653,6 +825,11 @@ export default async function sessionRoutes(app: FastifyInstance) {
 
       if (!session) {
         return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      // codex nao tem sistema de rewind
+      if (session.runtime !== 'claude') {
+        return reply.code(400).send({ error: 'rewind not supported for this session' });
       }
 
       const body = request.body;
