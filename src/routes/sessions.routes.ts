@@ -553,6 +553,11 @@ export default async function sessionRoutes(app: FastifyInstance) {
 
       const attachments = body?.attachments;
 
+      // A Codex SDK só tem UserInput de imagem
+      if (session.runtime === 'codex' && attachments?.some((attachment) => attachment.kind === 'document')) {
+        return reply.code(400).send({ error: 'Codex sessions only support image attachments' });
+      }
+
       // Uma sessão só pode processar uma mensagem por vez.
       // Se já está rodando ou esperando permissão, rejeita com 409
       if (session.status === 'running') {

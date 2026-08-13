@@ -1,7 +1,10 @@
 import { readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { AgentEvent } from '../../events/agent-event';
+import { AgentEvent, UserMessageAttachment } from '../../events/agent-event';
+
+// Um data URL "data:<media_type>;base64,<data>", formato que o rollout usa pra embutir a imagem na resposta
+const DATA_URL_PATTERN = /^data:([^;]+);base64,(.+)$/;
 
 const CODEX_SESSIONS_DIR = join(homedir(), '.codex', 'sessions');
 
@@ -50,6 +53,9 @@ export function readCodexHistory(sessionId: string, threadId: string): AgentEven
   const events: AgentEvent[] = [];
   const toolNamesByCallId = new Map<string, string>();
 
+  // Guarda as imagens do response_item até encontrar o user_message correspondente.
+  let pendingImageAttachments: UserMessageAttachment[] = [];
+
   for (const line of lines) {
     let record: RolloutLine;
 
@@ -60,13 +66,44 @@ export function readCodexHistory(sessionId: string, threadId: string): AgentEven
     }
 
     if (record.type === 'event_msg') {
-      events.push(...mapEventMsg(sessionId, record.payload));
+      for (const event of mapEventMsg(sessionId, record.payload)) {
+        if (event.type === 'user.message' && pendingImageAttachments.length) {
+          event.attachments = pendingImageAttachments;
+          pendingImageAttachments = [];
+        }
+
+        events.push(event);
+      }
     } else if (record.type === 'response_item') {
+      pendingImageAttachments = pendingImageAttachments.concat(extractUserImageAttachments(record.payload));
       events.push(...mapResponseItem(sessionId, record.payload, toolNamesByCallId));
     }
   }
 
   return events;
+}
+
+// Extrai as imagens dos anexos do usuário diretamente do response_item.
+function extractUserImageAttachments(payload: Record<string, unknown> | undefined): UserMessageAttachment[] {
+  if (!payload || payload.type !== 'message' || payload.role !== 'user' || !Array.isArray(payload.content)) {
+    return [];
+  }
+
+  const attachments: UserMessageAttachment[] = [];
+
+  for (const block of payload.content as Array<Record<string, unknown>>) {
+    if (block.type !== 'input_image' || typeof block.image_url !== 'string') {
+      continue;
+    }
+
+    const match = DATA_URL_PATTERN.exec(block.image_url);
+
+    if (match) {
+      attachments.push({ kind: 'image', mediaType: match[1] as string, data: match[2] as string });
+    }
+  }
+
+  return attachments;
 }
 
 function mapEventMsg(sessionId: string, payload: Record<string, unknown> | undefined): AgentEvent[] {
