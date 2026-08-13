@@ -1,7 +1,15 @@
 import { AgentSession } from '../sessions/session';
 
+// Anexo imagem ou documento enviado junto de uma mensagem
+export type MessageAttachment = {
+  mediaType: string;
+  data: string;
+  kind: 'image' | 'document';
+  filename?: string;
+};
+
 export interface AgentRuntime {
-  sendMessage(session: AgentSession, content: string): Promise<void>;
+  sendMessage(session: AgentSession, content: string, attachments?: MessageAttachment[]): Promise<void>;
   cancel(sessionId: string): Promise<void>;
 }
 

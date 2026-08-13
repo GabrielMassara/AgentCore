@@ -1,5 +1,42 @@
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { AgentEvent } from '../../events/agent-event';
+import { AgentEvent, UserMessageAttachment } from '../../events/agent-event';
+
+// Reconstitui um anexo a partir do content block bruto persistido no transcript da SDK
+function mapContentBlockToAttachment(block: any): UserMessageAttachment | null {
+  if (block.type === 'image') {
+    const source = block.source;
+
+    if (!source || source.type !== 'base64') {
+      return null;
+    }
+
+    return { kind: 'image', mediaType: source.media_type, data: source.data };
+  }
+
+  if (block.type === 'document') {
+    const source = block.source;
+
+    if (!source) {
+      return null;
+    }
+
+    if (source.type === 'base64') {
+      return { kind: 'document', mediaType: source.media_type, data: source.data, ...(block.title ? { filename: block.title } : {}) };
+    }
+
+    // reconverte pra base64 aqui pra manter o mesmo formato que attachments[].data usa em todo o resto.
+    if (source.type === 'text') {
+      return {
+        kind: 'document',
+        mediaType: 'text/plain',
+        data: Buffer.from(source.data, 'utf-8').toString('base64'),
+        ...(block.title ? { filename: block.title } : {}),
+      };
+    }
+  }
+
+  return null;
+}
 
 // Converte mensagens brutas da Claude Agent SDK em AgentEvent que é o formato que
 // a API expõe via SSE. Deve ser criado um ClaudeEventMapper novo para cada
@@ -83,6 +120,18 @@ export class ClaudeEventMapper {
       return events;
     }
 
+    const attachments: UserMessageAttachment[] = [];
+
+    for (const block of blocks) {
+      if (block.type === 'image' || block.type === 'document') {
+        const attachment = mapContentBlockToAttachment(block);
+
+        if (attachment) {
+          attachments.push(attachment);
+        }
+      }
+    }
+
     for (const block of blocks) {
       if (block.type === 'tool_result') {
         let toolName = this.toolNamesByUseId.get(block.tool_use_id);
@@ -101,7 +150,13 @@ export class ClaudeEventMapper {
 
       // Texto puro em uma mensagem "user" só acontece ao reproduzir histórico; o uuid vira o userMessageId do rewind.
       if (block.type === 'text') {
-        events.push({ type: 'user.message', sessionId: this.sessionId, text: block.text, messageId: msg.uuid });
+        events.push({
+          type: 'user.message',
+          sessionId: this.sessionId,
+          text: block.text,
+          messageId: msg.uuid,
+          ...(attachments.length ? { attachments } : {}),
+        });
       }
     }
 

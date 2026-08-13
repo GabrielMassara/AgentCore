@@ -7,7 +7,7 @@ import { ClaudeRuntime } from '../runtimes/claude/claude.runtime';
 import { ClaudeEventMapper } from '../runtimes/claude/claude.mapper';
 import { CodexRuntime } from '../runtimes/codex/codex.runtime';
 import { readCodexHistory } from '../runtimes/codex/codex.history';
-import { AgentRuntime } from '../runtimes/agent-runtime';
+import { AgentRuntime, MessageAttachment } from '../runtimes/agent-runtime';
 import { subscribe, unsubscribe } from '../events/event-bus';
 import { AgentEvent } from '../events/agent-event';
 import { AgentSession, SessionStatus, CodexSandboxMode, CodexReasoningEffort, CodexWebSearchMode } from '../sessions/session';
@@ -39,7 +39,49 @@ type SessionHistoryQuery = {
 
 type SendMessageBody = {
   content: string;
+  attachments?: MessageAttachment[];
 };
+
+// Tipos de mídia que a API da Anthropic aceita para cada anexo
+const ALLOWED_IMAGE_MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
+const ALLOWED_DOCUMENT_MEDIA_TYPES = new Set(['application/pdf', 'text/plain']);
+
+const SEND_MESSAGE_BODY_LIMIT_BYTES = 32 * 1024 * 1024;
+
+// Confere kind/mediaType/data de cada anexo antes de encaminhar pro runtime
+function validateAttachments(attachments: unknown): string | undefined {
+  if (attachments === undefined) {
+    return undefined;
+  }
+
+  if (!Array.isArray(attachments)) {
+    return '"attachments" must be an array';
+  }
+
+  for (const attachment of attachments) {
+    if (!attachment || typeof attachment !== 'object') {
+      return 'Each attachment must be an object';
+    }
+
+    const { kind, mediaType, data } = attachment as Record<string, unknown>;
+
+    if (kind !== 'image' && kind !== 'document') {
+      return 'Attachment "kind" must be "image" or "document"';
+    }
+
+    if (typeof data !== 'string' || !data) {
+      return 'Attachment "data" (base64) is required';
+    }
+
+    const allowedMediaTypes = kind === 'image' ? ALLOWED_IMAGE_MEDIA_TYPES : ALLOWED_DOCUMENT_MEDIA_TYPES;
+
+    if (typeof mediaType !== 'string' || !allowedMediaTypes.has(mediaType)) {
+      return `Attachment "mediaType" must be one of: ${[...allowedMediaTypes].join(', ')} for kind "${kind}"`;
+    }
+  }
+
+  return undefined;
+}
 
 type RenameSessionBody = {
   title: string;
@@ -481,6 +523,7 @@ export default async function sessionRoutes(app: FastifyInstance) {
   // Envia uma mensagem para o Claude dentro de uma sessão existente.
   app.post<{ Params: { sessionId: string }; Body: SendMessageBody }>(
     '/v1/sessions/:sessionId/messages',
+    { bodyLimit: SEND_MESSAGE_BODY_LIMIT_BYTES },
     async (request, reply) => {
       const { sessionId } = request.params;
       const session = getSession(sessionId);
@@ -502,6 +545,14 @@ export default async function sessionRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: '"content" is required' });
       }
 
+      const attachmentsError = validateAttachments(body?.attachments);
+
+      if (attachmentsError) {
+        return reply.code(400).send({ error: attachmentsError });
+      }
+
+      const attachments = body?.attachments;
+
       // Uma sessão só pode processar uma mensagem por vez.
       // Se já está rodando ou esperando permissão, rejeita com 409
       if (session.status === 'running') {
@@ -519,7 +570,7 @@ export default async function sessionRoutes(app: FastifyInstance) {
 
       // A chamada ao agente roda em background.
       // O cliente HTTP vai receber a resposta 202 imediatamente sem esperar o agente terminar
-      runtimeFor(session).sendMessage(session, content).catch(handleSendMessageError);
+      runtimeFor(session).sendMessage(session, content, attachments).catch(handleSendMessageError);
 
       return reply.code(202).send({ accepted: true });
     }

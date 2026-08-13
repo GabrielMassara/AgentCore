@@ -1,6 +1,6 @@
 import { spawn } from 'child_process';
 import type { Codex as CodexClient, ThreadOptions, Usage } from '@openai/codex-sdk';
-import { AgentRuntime, RuntimeModel } from '../agent-runtime';
+import { AgentRuntime, MessageAttachment, RuntimeModel } from '../agent-runtime';
 import { AgentSession, CodexSessionUsage } from '../../sessions/session';
 import { updateSession } from '../../sessions/session-manager';
 import { publish } from '../../events/event-bus';
@@ -80,7 +80,7 @@ function accumulateCodexUsage(existing: CodexSessionUsage | undefined, usage: Us
 }
 
 export class CodexRuntime implements AgentRuntime {
-  async sendMessage(session: AgentSession, content: string): Promise<void> {
+  async sendMessage(session: AgentSession, content: string, _attachments?: MessageAttachment[]): Promise<void> {
     const abortController = new AbortController();
     activeAbortControllers.set(session.id, abortController);
 
