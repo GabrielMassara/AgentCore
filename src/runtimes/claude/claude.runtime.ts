@@ -82,11 +82,18 @@ function buildMessageContent(content: string, attachments?: MessageAttachment[])
 const TODO_WRITE_TOOL_NAME = 'TodoWrite';
 
 // Monta o "settings" passado pra query()
-function buildClaudeSettings(claudeDeniedTools: string[] | undefined): Record<string, unknown> {
+function buildClaudeSettings(
+  claudeDeniedTools: string[] | undefined,
+  claudeEffortLevel: AgentSession['claudeEffortLevel']
+): Record<string, unknown> {
   const settings: Record<string, unknown> = { todoFeatureEnabled: true };
 
   if (claudeDeniedTools && claudeDeniedTools.length) {
     settings.permissions = { deny: claudeDeniedTools };
+  }
+
+  if (claudeEffortLevel) {
+    settings.effortLevel = claudeEffortLevel;
   }
 
   return settings;
@@ -226,7 +233,7 @@ export class ClaudeRuntime implements AgentRuntime {
       includePartialMessages: true,
       // Necessário para Query.rewindFiles() funcionar.
       enableFileCheckpointing: true,
-      settings: buildClaudeSettings(session.claudeDeniedTools),
+      settings: buildClaudeSettings(session.claudeDeniedTools, session.claudeEffortLevel),
     };
 
     // Se a sessão já tem um providerSessionId (uma conversa anterior com o Claude), usa resume para continuar a mesma conversa em vez de começar do zero

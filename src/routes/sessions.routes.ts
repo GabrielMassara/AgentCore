@@ -10,7 +10,7 @@ import { readCodexHistory } from '../runtimes/codex/codex.history';
 import { AgentRuntime, MessageAttachment } from '../runtimes/agent-runtime';
 import { subscribe, unsubscribe } from '../events/event-bus';
 import { AgentEvent } from '../events/agent-event';
-import { AgentSession, SessionStatus, CodexSandboxMode, CodexReasoningEffort, CodexWebSearchMode } from '../sessions/session';
+import { AgentSession, SessionStatus, CodexSandboxMode, CodexReasoningEffort, CodexWebSearchMode, ClaudeEffortLevel } from '../sessions/session';
 import { getCachedClaudeTools } from '../sessions/claude-tools-cache';
 
 type CreateSessionBody = {
@@ -122,6 +122,17 @@ function validateClaudeDeniedTools(deny: unknown): string | null {
 
   return null;
 }
+
+type SetClaudeEffortLevelBody = {
+  effort: ClaudeEffortLevel;
+};
+
+const validClaudeEffortLevels: ClaudeEffortLevel[] = [
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+];
 
 const validPermissionModes: PermissionMode[] = [
   'default',
@@ -765,6 +776,33 @@ export default async function sessionRoutes(app: FastifyInstance) {
       updateSession(sessionId, { claudeDeniedTools: deny as string[] });
 
       return reply.code(200).send({ deny, applied: 'pending' });
+    }
+  );
+
+  // Configura o esforço de raciocínio do Claude para uma sessão
+  app.post<{ Params: { sessionId: string }; Body: SetClaudeEffortLevelBody }>(
+    '/v1/sessions/:sessionId/claude-effort-level',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const session = getSession(sessionId);
+
+      if (!session) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      if (session.runtime !== 'claude') {
+        return reply.code(400).send({ error: 'claude-effort-level only applies to Claude sessions' });
+      }
+
+      const effort = request.body && request.body.effort;
+
+      if (!effort || !validClaudeEffortLevels.includes(effort)) {
+        return reply.code(400).send({ error: `"effort" must be one of: ${validClaudeEffortLevels.join(', ')}` });
+      }
+
+      updateSession(sessionId, { claudeEffortLevel: effort });
+
+      return reply.code(200).send({ effort, applied: 'pending' });
     }
   );
 
