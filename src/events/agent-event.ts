@@ -1,8 +1,18 @@
+// Anexo imagem ou documento reconstituído a partir do transcript persistido pela própria SDK
+export type UserMessageAttachment = {
+  mediaType: string;
+  data: string;
+  kind: 'image' | 'document';
+  filename?: string;
+};
+
+// Estado de um item do plano/todo-list
+export type AgentTodoItemStatus = 'pending' | 'in_progress' | 'completed';
+
 // Contrato de eventos exposto pela API via SSE
 export type AgentEvent =
   | { type: 'agent.started'; sessionId: string }
-  // Só aparece ao reproduzir histórico GET /history
-  | { type: 'user.message'; sessionId: string; text: string; messageId?: string }
+  | { type: 'user.message'; sessionId: string; text: string; messageId?: string; attachments?: UserMessageAttachment[] }
   | { type: 'assistant.delta'; sessionId: string; text: string }
   | { type: 'assistant.message'; sessionId: string; text: string; messageId?: string }
   | { type: 'tool.started'; sessionId: string; tool: string; input: unknown }
@@ -10,4 +20,5 @@ export type AgentEvent =
   | { type: 'permission.requested'; sessionId: string; permissionId: string; tool: string; description: string }
   | { type: 'agent.completed'; sessionId: string }
   | { type: 'agent.cancelled'; sessionId: string }
-  | { type: 'agent.error'; sessionId: string; message: string };
+  | { type: 'agent.error'; sessionId: string; message: string }
+  | { type: 'agent.todo_list'; sessionId: string; items: { text: string; status: AgentTodoItemStatus }[] };

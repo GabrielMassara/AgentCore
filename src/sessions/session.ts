@@ -9,6 +9,9 @@ export type CodexReasoningEffort = 'minimal' | 'low' | 'medium' | 'high' | 'xhig
 // Modo de busca na web do Codex
 export type CodexWebSearchMode = 'disabled' | 'cached' | 'live';
 
+// Esforço de raciocínio do modelo, só pro Claude
+export type ClaudeEffortLevel = 'low' | 'medium' | 'high' | 'xhigh';
+
 export type SessionStatus =
   | 'ready'
   | 'running'
@@ -56,6 +59,8 @@ export type AgentSession = {
   forkedFromMessageId?: string;
   tag?: string;
   permissionMode?: PermissionMode | undefined;
+  claudeDeniedTools?: string[] | undefined;
+  claudeEffortLevel?: ClaudeEffortLevel | undefined;
   codexSandboxMode?: CodexSandboxMode | undefined;
   codexReasoningEffort?: CodexReasoningEffort | undefined;
   codexWebSearchMode?: CodexWebSearchMode | undefined;

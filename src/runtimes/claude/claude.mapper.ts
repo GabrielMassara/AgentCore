@@ -1,5 +1,46 @@
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { AgentEvent } from '../../events/agent-event';
+import type { TodoWriteInput } from '@anthropic-ai/claude-agent-sdk/sdk-tools';
+import { AgentEvent, AgentTodoItemStatus, UserMessageAttachment } from '../../events/agent-event';
+
+// Nome da tool nativa de plano/todo-list da Claude Code CLI
+const TODO_WRITE_TOOL_NAME = 'TodoWrite';
+
+// Reconstitui um anexo a partir do content block bruto persistido no transcript da SDK
+function mapContentBlockToAttachment(block: any): UserMessageAttachment | null {
+  if (block.type === 'image') {
+    const source = block.source;
+
+    if (!source || source.type !== 'base64') {
+      return null;
+    }
+
+    return { kind: 'image', mediaType: source.media_type, data: source.data };
+  }
+
+  if (block.type === 'document') {
+    const source = block.source;
+
+    if (!source) {
+      return null;
+    }
+
+    if (source.type === 'base64') {
+      return { kind: 'document', mediaType: source.media_type, data: source.data, ...(block.title ? { filename: block.title } : {}) };
+    }
+
+    // reconverte pra base64 aqui pra manter o mesmo formato que attachments[].data usa em todo o resto.
+    if (source.type === 'text') {
+      return {
+        kind: 'document',
+        mediaType: 'text/plain',
+        data: Buffer.from(source.data, 'utf-8').toString('base64'),
+        ...(block.title ? { filename: block.title } : {}),
+      };
+    }
+  }
+
+  return null;
+}
 
 // Converte mensagens brutas da Claude Agent SDK em AgentEvent que é o formato que
 // a API expõe via SSE. Deve ser criado um ClaudeEventMapper novo para cada
@@ -50,15 +91,19 @@ export class ClaudeEventMapper {
       }
 
       if (block.type === 'tool_use') {
-        // Guarda o nome da tool para conseguir montar o "tool.completed" depois.
+        // Guarda o nome da tool para conseguir montar o "tool.completed"
         this.toolNamesByUseId.set(block.id, block.name);
 
-        events.push({
-          type: 'tool.started',
-          sessionId: this.sessionId,
-          tool: block.name,
-          input: block.input,
-        });
+        if (block.name === TODO_WRITE_TOOL_NAME) {
+          events.push(...this.mapTodoWrite(block.input));
+        } else {
+          events.push({
+            type: 'tool.started',
+            sessionId: this.sessionId,
+            tool: block.name,
+            input: block.input,
+          });
+        }
       }
     }
 
@@ -83,6 +128,18 @@ export class ClaudeEventMapper {
       return events;
     }
 
+    const attachments: UserMessageAttachment[] = [];
+
+    for (const block of blocks) {
+      if (block.type === 'image' || block.type === 'document') {
+        const attachment = mapContentBlockToAttachment(block);
+
+        if (attachment) {
+          attachments.push(attachment);
+        }
+      }
+    }
+
     for (const block of blocks) {
       if (block.type === 'tool_result') {
         let toolName = this.toolNamesByUseId.get(block.tool_use_id);
@@ -91,21 +148,45 @@ export class ClaudeEventMapper {
           toolName = 'unknown';
         }
 
-        events.push({
-          type: 'tool.completed',
-          sessionId: this.sessionId,
-          tool: toolName,
-          output: block.content,
-        });
+        
+        if (toolName !== TODO_WRITE_TOOL_NAME) {
+          events.push({
+            type: 'tool.completed',
+            sessionId: this.sessionId,
+            tool: toolName,
+            output: block.content,
+          });
+        }
       }
 
       // Texto puro em uma mensagem "user" só acontece ao reproduzir histórico; o uuid vira o userMessageId do rewind.
       if (block.type === 'text') {
-        events.push({ type: 'user.message', sessionId: this.sessionId, text: block.text, messageId: msg.uuid });
+        events.push({
+          type: 'user.message',
+          sessionId: this.sessionId,
+          text: block.text,
+          messageId: msg.uuid,
+          ...(attachments.length ? { attachments } : {}),
+        });
       }
     }
 
     return events;
+  }
+
+  private mapTodoWrite(input: unknown): AgentEvent[] {
+    const todos = (input as Partial<TodoWriteInput> | undefined)?.todos;
+
+    if (!Array.isArray(todos)) {
+      return [];
+    }
+
+    const items = todos.map((todo): { text: string; status: AgentTodoItemStatus } => ({
+      text: todo.content,
+      status: todo.status,
+    }));
+
+    return [{ type: 'agent.todo_list', sessionId: this.sessionId, items }];
   }
 
   // Mensagem "stream_event": chunks parciais da resposta, usados para o "assistant.delta".

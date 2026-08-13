@@ -1,6 +1,9 @@
 import { spawn } from 'child_process';
-import type { Codex as CodexClient, ThreadOptions, Usage } from '@openai/codex-sdk';
-import { AgentRuntime, RuntimeModel } from '../agent-runtime';
+import { randomUUID } from 'crypto';
+import { mkdir, unlink, writeFile } from 'fs/promises';
+import { join } from 'path';
+import type { Codex as CodexClient, Input, ThreadOptions, UserInput, Usage } from '@openai/codex-sdk';
+import { AgentRuntime, MessageAttachment, RuntimeModel } from '../agent-runtime';
 import { AgentSession, CodexSessionUsage } from '../../sessions/session';
 import { updateSession } from '../../sessions/session-manager';
 import { publish } from '../../events/event-bus';
@@ -68,6 +71,40 @@ function getErrorMessage(err: unknown): string {
   return 'Unknown error';
 }
 
+// Pasta dedicada dentro do projectPath pra materializar anexo de imagem em disco
+const UPLOADS_DIRNAME = '.agentcore-uploads';
+
+const IMAGE_EXTENSION_BY_MEDIA_TYPE: Record<string, string> = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+};
+
+// Escreve cada anexo de imagem num arquivo próprio dentro de <projectPath>/.agentcore-uploads/
+async function writeImageAttachmentsToDisk(projectPath: string, attachments: MessageAttachment[]): Promise<string[]> {
+  const uploadsDir = join(projectPath, UPLOADS_DIRNAME);
+  await mkdir(uploadsDir, { recursive: true });
+
+  const paths: string[] = [];
+
+  for (const attachment of attachments) {
+    const extension = IMAGE_EXTENSION_BY_MEDIA_TYPE[attachment.mediaType] ?? 'bin';
+    const filePath = join(uploadsDir, `${randomUUID()}.${extension}`);
+    await writeFile(filePath, Buffer.from(attachment.data, 'base64'));
+    paths.push(filePath);
+  }
+
+  return paths;
+}
+
+// apaga os arquivos temporários depois que o turno termina
+function cleanupUploadedFiles(paths: string[]): void {
+  for (const filePath of paths) {
+    unlink(filePath).catch(() => {});
+  }
+}
+
 // Soma o "usage" de um turn.completed ao acumulado anterior da sessão
 function accumulateCodexUsage(existing: CodexSessionUsage | undefined, usage: Usage): CodexSessionUsage {
   return {
@@ -80,7 +117,7 @@ function accumulateCodexUsage(existing: CodexSessionUsage | undefined, usage: Us
 }
 
 export class CodexRuntime implements AgentRuntime {
-  async sendMessage(session: AgentSession, content: string): Promise<void> {
+  async sendMessage(session: AgentSession, content: string, attachments?: MessageAttachment[]): Promise<void> {
     const abortController = new AbortController();
     activeAbortControllers.set(session.id, abortController);
 
@@ -124,9 +161,22 @@ export class CodexRuntime implements AgentRuntime {
       : codex.startThread(threadOptions);
 
     let finished = false;
+    let uploadedImagePaths: string[] = [];
 
     try {
-      const { events } = await thread.runStreamed(content, { signal: abortController.signal });
+      const imageAttachments = attachments?.filter((attachment) => attachment.kind === 'image') ?? [];
+
+      let input: Input = content;
+
+      if (imageAttachments.length) {
+        uploadedImagePaths = await writeImageAttachmentsToDisk(session.projectPath, imageAttachments);
+        input = [
+          { type: 'text', text: content },
+          ...uploadedImagePaths.map((path): UserInput => ({ type: 'local_image', path })),
+        ];
+      }
+
+      const { events } = await thread.runStreamed(input, { signal: abortController.signal });
 
       for await (const event of events) {
         // Primeiro evento da thread nova: grava o thread_id gerado pelo Codex para recuperar a conversa futuramente
@@ -165,6 +215,7 @@ export class CodexRuntime implements AgentRuntime {
       }
     } finally {
       activeAbortControllers.delete(session.id);
+      cleanupUploadedFiles(uploadedImagePaths);
     }
   }
 

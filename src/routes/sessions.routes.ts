@@ -7,10 +7,11 @@ import { ClaudeRuntime } from '../runtimes/claude/claude.runtime';
 import { ClaudeEventMapper } from '../runtimes/claude/claude.mapper';
 import { CodexRuntime } from '../runtimes/codex/codex.runtime';
 import { readCodexHistory } from '../runtimes/codex/codex.history';
-import { AgentRuntime } from '../runtimes/agent-runtime';
+import { AgentRuntime, MessageAttachment } from '../runtimes/agent-runtime';
 import { subscribe, unsubscribe } from '../events/event-bus';
 import { AgentEvent } from '../events/agent-event';
-import { AgentSession, SessionStatus, CodexSandboxMode, CodexReasoningEffort, CodexWebSearchMode } from '../sessions/session';
+import { AgentSession, SessionStatus, CodexSandboxMode, CodexReasoningEffort, CodexWebSearchMode, ClaudeEffortLevel } from '../sessions/session';
+import { getCachedClaudeTools } from '../sessions/claude-tools-cache';
 
 type CreateSessionBody = {
   runtime: 'claude' | 'codex';
@@ -39,7 +40,49 @@ type SessionHistoryQuery = {
 
 type SendMessageBody = {
   content: string;
+  attachments?: MessageAttachment[];
 };
+
+// Tipos de mídia que a API da Anthropic aceita para cada anexo
+const ALLOWED_IMAGE_MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
+const ALLOWED_DOCUMENT_MEDIA_TYPES = new Set(['application/pdf', 'text/plain']);
+
+const SEND_MESSAGE_BODY_LIMIT_BYTES = 32 * 1024 * 1024;
+
+// Confere kind/mediaType/data de cada anexo antes de encaminhar pro runtime
+function validateAttachments(attachments: unknown): string | undefined {
+  if (attachments === undefined) {
+    return undefined;
+  }
+
+  if (!Array.isArray(attachments)) {
+    return '"attachments" must be an array';
+  }
+
+  for (const attachment of attachments) {
+    if (!attachment || typeof attachment !== 'object') {
+      return 'Each attachment must be an object';
+    }
+
+    const { kind, mediaType, data } = attachment as Record<string, unknown>;
+
+    if (kind !== 'image' && kind !== 'document') {
+      return 'Attachment "kind" must be "image" or "document"';
+    }
+
+    if (typeof data !== 'string' || !data) {
+      return 'Attachment "data" (base64) is required';
+    }
+
+    const allowedMediaTypes = kind === 'image' ? ALLOWED_IMAGE_MEDIA_TYPES : ALLOWED_DOCUMENT_MEDIA_TYPES;
+
+    if (typeof mediaType !== 'string' || !allowedMediaTypes.has(mediaType)) {
+      return `Attachment "mediaType" must be one of: ${[...allowedMediaTypes].join(', ')} for kind "${kind}"`;
+    }
+  }
+
+  return undefined;
+}
 
 type RenameSessionBody = {
   title: string;
@@ -60,6 +103,36 @@ type RejectPermissionBody = {
 type SetPermissionModeBody = {
   mode: PermissionMode;
 };
+
+type SetClaudeToolPermissionsBody = {
+  deny: string[];
+};
+
+// Nomes livres, sem catálogo fechado pra validar contra
+function validateClaudeDeniedTools(deny: unknown): string | null {
+  if (!Array.isArray(deny)) {
+    return '"deny" must be an array of strings';
+  }
+
+  for (const tool of deny) {
+    if (typeof tool !== 'string' || !tool.trim()) {
+      return '"deny" must contain only non-empty strings';
+    }
+  }
+
+  return null;
+}
+
+type SetClaudeEffortLevelBody = {
+  effort: ClaudeEffortLevel;
+};
+
+const validClaudeEffortLevels: ClaudeEffortLevel[] = [
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+];
 
 const validPermissionModes: PermissionMode[] = [
   'default',
@@ -481,6 +554,7 @@ export default async function sessionRoutes(app: FastifyInstance) {
   // Envia uma mensagem para o Claude dentro de uma sessão existente.
   app.post<{ Params: { sessionId: string }; Body: SendMessageBody }>(
     '/v1/sessions/:sessionId/messages',
+    { bodyLimit: SEND_MESSAGE_BODY_LIMIT_BYTES },
     async (request, reply) => {
       const { sessionId } = request.params;
       const session = getSession(sessionId);
@@ -502,6 +576,19 @@ export default async function sessionRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: '"content" is required' });
       }
 
+      const attachmentsError = validateAttachments(body?.attachments);
+
+      if (attachmentsError) {
+        return reply.code(400).send({ error: attachmentsError });
+      }
+
+      const attachments = body?.attachments;
+
+      // A Codex SDK só tem UserInput de imagem
+      if (session.runtime === 'codex' && attachments?.some((attachment) => attachment.kind === 'document')) {
+        return reply.code(400).send({ error: 'Codex sessions only support image attachments' });
+      }
+
       // Uma sessão só pode processar uma mensagem por vez.
       // Se já está rodando ou esperando permissão, rejeita com 409
       if (session.status === 'running') {
@@ -519,7 +606,7 @@ export default async function sessionRoutes(app: FastifyInstance) {
 
       // A chamada ao agente roda em background.
       // O cliente HTTP vai receber a resposta 202 imediatamente sem esperar o agente terminar
-      runtimeFor(session).sendMessage(session, content).catch(handleSendMessageError);
+      runtimeFor(session).sendMessage(session, content, attachments).catch(handleSendMessageError);
 
       return reply.code(202).send({ accepted: true });
     }
@@ -637,6 +724,85 @@ export default async function sessionRoutes(app: FastifyInstance) {
       }
 
       return reply.code(200).send({ mode, applied });
+    }
+  );
+
+  // Lista de tools que a Claude Code CLI reportou disponível pro projeto desta sessão, a partir do cache por projectPath
+  app.get<{ Params: { sessionId: string } }>(
+    '/v1/sessions/:sessionId/claude-tools',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const session = getSession(sessionId);
+
+      if (!session) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      if (session.runtime !== 'claude') {
+        return reply.code(400).send({ error: 'claude-tools only applies to Claude sessions' });
+      }
+
+      const cached = getCachedClaudeTools(session.projectPath);
+
+      return reply.code(200).send({
+        tools: cached ? cached.tools : null,
+        updatedAt: cached ? cached.updatedAt : null,
+      });
+    }
+  );
+
+  // Configura quais tools o Claude não pode usar nesta sessão
+  app.post<{ Params: { sessionId: string }; Body: SetClaudeToolPermissionsBody }>(
+    '/v1/sessions/:sessionId/claude-tool-permissions',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const session = getSession(sessionId);
+
+      if (!session) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      if (session.runtime !== 'claude') {
+        return reply.code(400).send({ error: 'claude-tool-permissions only applies to Claude sessions' });
+      }
+
+      const deny = request.body && request.body.deny;
+      const validationError = validateClaudeDeniedTools(deny);
+
+      if (validationError) {
+        return reply.code(400).send({ error: validationError });
+      }
+
+      updateSession(sessionId, { claudeDeniedTools: deny as string[] });
+
+      return reply.code(200).send({ deny, applied: 'pending' });
+    }
+  );
+
+  // Configura o esforço de raciocínio do Claude para uma sessão
+  app.post<{ Params: { sessionId: string }; Body: SetClaudeEffortLevelBody }>(
+    '/v1/sessions/:sessionId/claude-effort-level',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const session = getSession(sessionId);
+
+      if (!session) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      if (session.runtime !== 'claude') {
+        return reply.code(400).send({ error: 'claude-effort-level only applies to Claude sessions' });
+      }
+
+      const effort = request.body && request.body.effort;
+
+      if (!effort || !validClaudeEffortLevels.includes(effort)) {
+        return reply.code(400).send({ error: `"effort" must be one of: ${validClaudeEffortLevels.join(', ')}` });
+      }
+
+      updateSession(sessionId, { claudeEffortLevel: effort });
+
+      return reply.code(200).send({ effort, applied: 'pending' });
     }
   );
 

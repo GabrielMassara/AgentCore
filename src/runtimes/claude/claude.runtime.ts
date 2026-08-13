@@ -9,9 +9,11 @@ import {
   type PermissionMode,
   type RewindFilesResult,
 } from '@anthropic-ai/claude-agent-sdk';
-import { AgentRuntime, RuntimeModel } from '../agent-runtime';
+import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages/messages';
+import { AgentRuntime, MessageAttachment, RuntimeModel } from '../agent-runtime';
 import { AgentSession, SessionStatus, type SessionUsage } from '../../sessions/session';
 import { updateSession } from '../../sessions/session-manager';
+import { setCachedClaudeTools } from '../../sessions/claude-tools-cache';
 import { publish } from '../../events/event-bus';
 import { ClaudeEventMapper } from './claude.mapper';
 
@@ -23,10 +25,84 @@ const activeAbortControllers = new Map<string, AbortController>();
 // prompt foi passado em streaming-input mode (AsyncIterable) em vez de string simples.
 const activeQueries = new Map<string, Query>();
 
-async function* singleMessageStream(content: string): AsyncGenerator<SDKUserMessage> {
+// Monta o bloco de conteúdo de um anexo no formato que a API da Anthropic espera
+function buildAttachmentBlock(attachment: MessageAttachment): ContentBlockParam {
+  if (attachment.kind === 'image') {
+    return {
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: attachment.mediaType as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp',
+        data: attachment.data,
+      },
+    };
+  }
+
+  // text/plain vai em base64 no corpo da requisição, mas a API espera o texto puro nesse source
+  if (attachment.mediaType === 'text/plain') {
+    return {
+      type: 'document',
+      source: {
+        type: 'text',
+        media_type: 'text/plain',
+        data: Buffer.from(attachment.data, 'base64').toString('utf-8'),
+      },
+      ...(attachment.filename ? { title: attachment.filename } : {}),
+    };
+  }
+
+  return {
+    type: 'document',
+    source: {
+      type: 'base64',
+      media_type: 'application/pdf',
+      data: attachment.data,
+    },
+    ...(attachment.filename ? { title: attachment.filename } : {}),
+  };
+}
+
+// Sem anexos mantém o content como string simples
+//  com anexos vira um array de blocos texto + imagem/documento, único formato que a API aceita pra combinar os dois
+function buildMessageContent(content: string, attachments?: MessageAttachment[]): string | ContentBlockParam[] {
+  if (!attachments || attachments.length === 0) {
+    return content;
+  }
+
+  const blocks: ContentBlockParam[] = [{ type: 'text', text: content }];
+
+  for (const attachment of attachments) {
+    blocks.push(buildAttachmentBlock(attachment));
+  }
+
+  return blocks;
+}
+
+// Nome exato da tool nativa de plano/todo-list da Claude Code CLI
+const TODO_WRITE_TOOL_NAME = 'TodoWrite';
+
+// Monta o "settings" passado pra query()
+function buildClaudeSettings(
+  claudeDeniedTools: string[] | undefined,
+  claudeEffortLevel: AgentSession['claudeEffortLevel']
+): Record<string, unknown> {
+  const settings: Record<string, unknown> = { todoFeatureEnabled: true };
+
+  if (claudeDeniedTools && claudeDeniedTools.length) {
+    settings.permissions = { deny: claudeDeniedTools };
+  }
+
+  if (claudeEffortLevel) {
+    settings.effortLevel = claudeEffortLevel;
+  }
+
+  return settings;
+}
+
+async function* singleMessageStream(content: string, attachments?: MessageAttachment[]): AsyncGenerator<SDKUserMessage> {
   yield {
     type: 'user',
-    message: { role: 'user', content },
+    message: { role: 'user', content: buildMessageContent(content, attachments) },
     parent_tool_use_id: null,
   };
 }
@@ -98,7 +174,7 @@ function getErrorMessage(err: unknown): string {
 }
 
 export class ClaudeRuntime implements AgentRuntime {
-  async sendMessage(session: AgentSession, content: string): Promise<void> {
+  async sendMessage(session: AgentSession, content: string, attachments?: MessageAttachment[]): Promise<void> {
 
     // Cria um AbortController novo para esta execução e guarda no mapa
     const abortController = new AbortController();
@@ -157,6 +233,7 @@ export class ClaudeRuntime implements AgentRuntime {
       includePartialMessages: true,
       // Necessário para Query.rewindFiles() funcionar.
       enableFileCheckpointing: true,
+      settings: buildClaudeSettings(session.claudeDeniedTools, session.claudeEffortLevel),
     };
 
     // Se a sessão já tem um providerSessionId (uma conversa anterior com o Claude), usa resume para continuar a mesma conversa em vez de começar do zero
@@ -179,7 +256,7 @@ export class ClaudeRuntime implements AgentRuntime {
     // Chama a Claude Agent SDK. O retorno é um async generator que vai emitindo
     // mensagens conforme o Claude processa o pedido. O prompt vai como AsyncIterable
     // (streaming-input mode) para permitir setPermissionMode/setModel/interrupt durante a execução.
-    const q = query({ prompt: singleMessageStream(content), options });
+    const q = query({ prompt: singleMessageStream(content, attachments), options });
     activeQueries.set(session.id, q);
 
     // Marca se a execução já chegou a um estado final
@@ -193,7 +270,18 @@ export class ClaudeRuntime implements AgentRuntime {
         // A primeira mensagem com tipo "system"/"init" retorna o session_id que o Claude gera para essa conversa
         // Armazena para recuperar a conversa futuramente
         if (sdkMsg.type === 'system' && (sdkMsg as any).subtype === 'init') {
-          updateSession(session.id, { providerSessionId: (sdkMsg as any).session_id });
+          const initMsg = sdkMsg as any;
+          updateSession(session.id, { providerSessionId: initMsg.session_id });
+
+          // Todo turno reporta a lista de tools disponível pro projeto, então
+          // isso também mantém o cache atualizado sozinho a cada mensagem
+          if (Array.isArray(initMsg.tools)) {
+            const tools = initMsg.tools.includes(TODO_WRITE_TOOL_NAME)
+              ? initMsg.tools
+              : [...initMsg.tools, TODO_WRITE_TOOL_NAME];
+
+            setCachedClaudeTools(session.projectPath, tools);
+          }
         }
 
         // A mensagem do tipo "result" indica que a execução terminou.

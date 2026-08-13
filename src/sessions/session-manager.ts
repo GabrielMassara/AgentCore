@@ -105,7 +105,7 @@ export function deleteSession(id: string): boolean {
   return deleted;
 }
 
-export function updateSession(id: string, patch: Partial<Pick<AgentSession, 'status' | 'providerSessionId' | 'permissionMode' | 'codexSandboxMode' | 'codexReasoningEffort' | 'codexWebSearchMode' | 'codexWebSearchEnabled' | 'codexAdditionalDirectories' | 'model' | 'usage' | 'codexUsage'>>): AgentSession | undefined {
+export function updateSession(id: string, patch: Partial<Pick<AgentSession, 'status' | 'providerSessionId' | 'permissionMode' | 'claudeDeniedTools' | 'claudeEffortLevel' | 'codexSandboxMode' | 'codexReasoningEffort' | 'codexWebSearchMode' | 'codexWebSearchEnabled' | 'codexAdditionalDirectories' | 'model' | 'usage' | 'codexUsage'>>): AgentSession | undefined {
   const session = sessions.get(id);
 
   if (!session) {
