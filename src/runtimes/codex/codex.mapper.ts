@@ -1,6 +1,7 @@
 import type {
   ThreadEvent,
   ThreadItem,
+  TodoListItem,
   CommandExecutionItem,
   FileChangeItem,
   McpToolCallItem,
@@ -52,6 +53,10 @@ export class CodexEventMapper {
   }
 
   private mapItemStarted(item: ThreadItem): AgentEvent[] {
+    if (item.type === 'todo_list') {
+      return this.mapTodoList(item);
+    }
+
     if (item.type === 'agent_message') {
       this.lastAgentMessageText.set(item.id, item.text);
       return item.text ? [{ type: 'assistant.delta', sessionId: this.sessionId, text: item.text }] : [];
@@ -72,6 +77,10 @@ export class CodexEventMapper {
   }
 
   private mapItemUpdated(item: ThreadItem): AgentEvent[] {
+    if (item.type === 'todo_list') {
+      return this.mapTodoList(item);
+    }
+
     if (item.type !== 'agent_message') {
       return [];
     }
@@ -85,6 +94,10 @@ export class CodexEventMapper {
   }
 
   private mapItemCompleted(item: ThreadItem): AgentEvent[] {
+    if (item.type === 'todo_list') {
+      return this.mapTodoList(item);
+    }
+
     if (item.type === 'agent_message') {
       this.lastAgentMessageText.delete(item.id);
       return [{ type: 'assistant.message', sessionId: this.sessionId, text: item.text, messageId: item.id }];
@@ -102,6 +115,10 @@ export class CodexEventMapper {
     }
 
     return [];
+  }
+
+  private mapTodoList(item: TodoListItem): AgentEvent[] {
+    return [{ type: 'agent.todo_list', sessionId: this.sessionId, items: item.items }];
   }
 
   private isToolItem(item: ThreadItem): item is ToolItem {

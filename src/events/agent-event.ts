@@ -17,4 +17,5 @@ export type AgentEvent =
   | { type: 'permission.requested'; sessionId: string; permissionId: string; tool: string; description: string }
   | { type: 'agent.completed'; sessionId: string }
   | { type: 'agent.cancelled'; sessionId: string }
-  | { type: 'agent.error'; sessionId: string; message: string };
+  | { type: 'agent.error'; sessionId: string; message: string }
+  | { type: 'agent.todo_list'; sessionId: string; items: { text: string; completed: boolean }[] };
