@@ -6,6 +6,9 @@ export type UserMessageAttachment = {
   filename?: string;
 };
 
+// Estado de um item do plano/todo-list
+export type AgentTodoItemStatus = 'pending' | 'in_progress' | 'completed';
+
 // Contrato de eventos exposto pela API via SSE
 export type AgentEvent =
   | { type: 'agent.started'; sessionId: string }
@@ -18,4 +21,4 @@ export type AgentEvent =
   | { type: 'agent.completed'; sessionId: string }
   | { type: 'agent.cancelled'; sessionId: string }
   | { type: 'agent.error'; sessionId: string; message: string }
-  | { type: 'agent.todo_list'; sessionId: string; items: { text: string; completed: boolean }[] };
+  | { type: 'agent.todo_list'; sessionId: string; items: { text: string; status: AgentTodoItemStatus }[] };

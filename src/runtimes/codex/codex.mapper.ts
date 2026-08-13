@@ -7,7 +7,7 @@ import type {
   McpToolCallItem,
   WebSearchItem,
 } from '@openai/codex-sdk';
-import { AgentEvent } from '../../events/agent-event';
+import { AgentEvent, AgentTodoItemStatus } from '../../events/agent-event';
 
 type ToolItem = CommandExecutionItem | FileChangeItem | McpToolCallItem | WebSearchItem;
 
@@ -118,7 +118,12 @@ export class CodexEventMapper {
   }
 
   private mapTodoList(item: TodoListItem): AgentEvent[] {
-    return [{ type: 'agent.todo_list', sessionId: this.sessionId, items: item.items }];
+    const items = item.items.map((todo): { text: string; status: AgentTodoItemStatus } => ({
+      text: todo.text,
+      status: todo.completed ? 'completed' : 'pending',
+    }));
+
+    return [{ type: 'agent.todo_list', sessionId: this.sessionId, items }];
   }
 
   private isToolItem(item: ThreadItem): item is ToolItem {

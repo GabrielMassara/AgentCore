@@ -1,5 +1,9 @@
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { AgentEvent, UserMessageAttachment } from '../../events/agent-event';
+import type { TodoWriteInput } from '@anthropic-ai/claude-agent-sdk/sdk-tools';
+import { AgentEvent, AgentTodoItemStatus, UserMessageAttachment } from '../../events/agent-event';
+
+// Nome da tool nativa de plano/todo-list da Claude Code CLI
+const TODO_WRITE_TOOL_NAME = 'TodoWrite';
 
 // Reconstitui um anexo a partir do content block bruto persistido no transcript da SDK
 function mapContentBlockToAttachment(block: any): UserMessageAttachment | null {
@@ -87,15 +91,19 @@ export class ClaudeEventMapper {
       }
 
       if (block.type === 'tool_use') {
-        // Guarda o nome da tool para conseguir montar o "tool.completed" depois.
+        // Guarda o nome da tool para conseguir montar o "tool.completed"
         this.toolNamesByUseId.set(block.id, block.name);
 
-        events.push({
-          type: 'tool.started',
-          sessionId: this.sessionId,
-          tool: block.name,
-          input: block.input,
-        });
+        if (block.name === TODO_WRITE_TOOL_NAME) {
+          events.push(...this.mapTodoWrite(block.input));
+        } else {
+          events.push({
+            type: 'tool.started',
+            sessionId: this.sessionId,
+            tool: block.name,
+            input: block.input,
+          });
+        }
       }
     }
 
@@ -140,12 +148,15 @@ export class ClaudeEventMapper {
           toolName = 'unknown';
         }
 
-        events.push({
-          type: 'tool.completed',
-          sessionId: this.sessionId,
-          tool: toolName,
-          output: block.content,
-        });
+        
+        if (toolName !== TODO_WRITE_TOOL_NAME) {
+          events.push({
+            type: 'tool.completed',
+            sessionId: this.sessionId,
+            tool: toolName,
+            output: block.content,
+          });
+        }
       }
 
       // Texto puro em uma mensagem "user" só acontece ao reproduzir histórico; o uuid vira o userMessageId do rewind.
@@ -161,6 +172,21 @@ export class ClaudeEventMapper {
     }
 
     return events;
+  }
+
+  private mapTodoWrite(input: unknown): AgentEvent[] {
+    const todos = (input as Partial<TodoWriteInput> | undefined)?.todos;
+
+    if (!Array.isArray(todos)) {
+      return [];
+    }
+
+    const items = todos.map((todo): { text: string; status: AgentTodoItemStatus } => ({
+      text: todo.content,
+      status: todo.status,
+    }));
+
+    return [{ type: 'agent.todo_list', sessionId: this.sessionId, items }];
   }
 
   // Mensagem "stream_event": chunks parciais da resposta, usados para o "assistant.delta".

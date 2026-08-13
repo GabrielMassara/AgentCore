@@ -211,6 +211,7 @@ export class ClaudeRuntime implements AgentRuntime {
       includePartialMessages: true,
       // Necessário para Query.rewindFiles() funcionar.
       enableFileCheckpointing: true,
+      settings: { todoFeatureEnabled: true },
     };
 
     // Se a sessão já tem um providerSessionId (uma conversa anterior com o Claude), usa resume para continuar a mesma conversa em vez de começar do zero
