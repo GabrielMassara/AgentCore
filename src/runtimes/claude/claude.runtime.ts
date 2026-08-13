@@ -13,6 +13,7 @@ import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages/mes
 import { AgentRuntime, MessageAttachment, RuntimeModel } from '../agent-runtime';
 import { AgentSession, SessionStatus, type SessionUsage } from '../../sessions/session';
 import { updateSession } from '../../sessions/session-manager';
+import { setCachedClaudeTools } from '../../sessions/claude-tools-cache';
 import { publish } from '../../events/event-bus';
 import { ClaudeEventMapper } from './claude.mapper';
 
@@ -75,6 +76,20 @@ function buildMessageContent(content: string, attachments?: MessageAttachment[])
   }
 
   return blocks;
+}
+
+// Nome exato da tool nativa de plano/todo-list da Claude Code CLI
+const TODO_WRITE_TOOL_NAME = 'TodoWrite';
+
+// Monta o "settings" passado pra query()
+function buildClaudeSettings(claudeDeniedTools: string[] | undefined): Record<string, unknown> {
+  const settings: Record<string, unknown> = { todoFeatureEnabled: true };
+
+  if (claudeDeniedTools && claudeDeniedTools.length) {
+    settings.permissions = { deny: claudeDeniedTools };
+  }
+
+  return settings;
 }
 
 async function* singleMessageStream(content: string, attachments?: MessageAttachment[]): AsyncGenerator<SDKUserMessage> {
@@ -211,7 +226,7 @@ export class ClaudeRuntime implements AgentRuntime {
       includePartialMessages: true,
       // Necessário para Query.rewindFiles() funcionar.
       enableFileCheckpointing: true,
-      settings: { todoFeatureEnabled: true },
+      settings: buildClaudeSettings(session.claudeDeniedTools),
     };
 
     // Se a sessão já tem um providerSessionId (uma conversa anterior com o Claude), usa resume para continuar a mesma conversa em vez de começar do zero
@@ -248,7 +263,18 @@ export class ClaudeRuntime implements AgentRuntime {
         // A primeira mensagem com tipo "system"/"init" retorna o session_id que o Claude gera para essa conversa
         // Armazena para recuperar a conversa futuramente
         if (sdkMsg.type === 'system' && (sdkMsg as any).subtype === 'init') {
-          updateSession(session.id, { providerSessionId: (sdkMsg as any).session_id });
+          const initMsg = sdkMsg as any;
+          updateSession(session.id, { providerSessionId: initMsg.session_id });
+
+          // Todo turno reporta a lista de tools disponível pro projeto, então
+          // isso também mantém o cache atualizado sozinho a cada mensagem
+          if (Array.isArray(initMsg.tools)) {
+            const tools = initMsg.tools.includes(TODO_WRITE_TOOL_NAME)
+              ? initMsg.tools
+              : [...initMsg.tools, TODO_WRITE_TOOL_NAME];
+
+            setCachedClaudeTools(session.projectPath, tools);
+          }
         }
 
         // A mensagem do tipo "result" indica que a execução terminou.

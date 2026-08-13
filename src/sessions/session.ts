@@ -56,6 +56,7 @@ export type AgentSession = {
   forkedFromMessageId?: string;
   tag?: string;
   permissionMode?: PermissionMode | undefined;
+  claudeDeniedTools?: string[] | undefined;
   codexSandboxMode?: CodexSandboxMode | undefined;
   codexReasoningEffort?: CodexReasoningEffort | undefined;
   codexWebSearchMode?: CodexWebSearchMode | undefined;

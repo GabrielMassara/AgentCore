@@ -11,6 +11,7 @@ import { AgentRuntime, MessageAttachment } from '../runtimes/agent-runtime';
 import { subscribe, unsubscribe } from '../events/event-bus';
 import { AgentEvent } from '../events/agent-event';
 import { AgentSession, SessionStatus, CodexSandboxMode, CodexReasoningEffort, CodexWebSearchMode } from '../sessions/session';
+import { getCachedClaudeTools } from '../sessions/claude-tools-cache';
 
 type CreateSessionBody = {
   runtime: 'claude' | 'codex';
@@ -102,6 +103,25 @@ type RejectPermissionBody = {
 type SetPermissionModeBody = {
   mode: PermissionMode;
 };
+
+type SetClaudeToolPermissionsBody = {
+  deny: string[];
+};
+
+// Nomes livres, sem catálogo fechado pra validar contra
+function validateClaudeDeniedTools(deny: unknown): string | null {
+  if (!Array.isArray(deny)) {
+    return '"deny" must be an array of strings';
+  }
+
+  for (const tool of deny) {
+    if (typeof tool !== 'string' || !tool.trim()) {
+      return '"deny" must contain only non-empty strings';
+    }
+  }
+
+  return null;
+}
 
 const validPermissionModes: PermissionMode[] = [
   'default',
@@ -693,6 +713,58 @@ export default async function sessionRoutes(app: FastifyInstance) {
       }
 
       return reply.code(200).send({ mode, applied });
+    }
+  );
+
+  // Lista de tools que a Claude Code CLI reportou disponível pro projeto desta sessão, a partir do cache por projectPath
+  app.get<{ Params: { sessionId: string } }>(
+    '/v1/sessions/:sessionId/claude-tools',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const session = getSession(sessionId);
+
+      if (!session) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      if (session.runtime !== 'claude') {
+        return reply.code(400).send({ error: 'claude-tools only applies to Claude sessions' });
+      }
+
+      const cached = getCachedClaudeTools(session.projectPath);
+
+      return reply.code(200).send({
+        tools: cached ? cached.tools : null,
+        updatedAt: cached ? cached.updatedAt : null,
+      });
+    }
+  );
+
+  // Configura quais tools o Claude não pode usar nesta sessão
+  app.post<{ Params: { sessionId: string }; Body: SetClaudeToolPermissionsBody }>(
+    '/v1/sessions/:sessionId/claude-tool-permissions',
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const session = getSession(sessionId);
+
+      if (!session) {
+        return reply.code(404).send({ error: 'Session not found' });
+      }
+
+      if (session.runtime !== 'claude') {
+        return reply.code(400).send({ error: 'claude-tool-permissions only applies to Claude sessions' });
+      }
+
+      const deny = request.body && request.body.deny;
+      const validationError = validateClaudeDeniedTools(deny);
+
+      if (validationError) {
+        return reply.code(400).send({ error: validationError });
+      }
+
+      updateSession(sessionId, { claudeDeniedTools: deny as string[] });
+
+      return reply.code(200).send({ deny, applied: 'pending' });
     }
   );
 
