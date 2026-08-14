@@ -46,7 +46,7 @@ function saveSessions() {
 loadSessions();
 
 export function createSession(
-  runtime: 'claude' | 'codex',
+  runtime: 'claude' | 'codex' | 'opencode',
   projectPath: string,
   providerSessionId?: string,
   forkedFrom?: string,

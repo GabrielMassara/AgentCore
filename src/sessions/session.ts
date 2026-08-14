@@ -49,7 +49,7 @@ export type CodexSessionUsage = {
 
 export type AgentSession = {
   id: string;
-  runtime: 'claude' | 'codex';
+  runtime: 'claude' | 'codex' | 'opencode';
   projectPath: string;
   providerSessionId?: string;
   status: SessionStatus;

@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { getConfig, updateRuntimeConfig, RuntimeName } from '../config/adapter-config';
 import { ClaudeRuntime } from '../runtimes/claude/claude.runtime';
 import { CodexRuntime } from '../runtimes/codex/codex.runtime';
+import { OpenCodeRuntime } from '../runtimes/opencode/opencode.runtime';
 import { RuntimeModel } from '../runtimes/agent-runtime';
 
 type RuntimeConfigPatch = { enabled?: boolean };
@@ -9,16 +10,20 @@ type RuntimeConfigPatch = { enabled?: boolean };
 type UpdateConfigBody = {
   claude?: RuntimeConfigPatch;
   codex?: RuntimeConfigPatch;
+  opencode?: RuntimeConfigPatch;
 };
 
-const runtimeNames: RuntimeName[] = ['claude', 'codex'];
+const runtimeNames: RuntimeName[] = ['claude', 'codex', 'opencode'];
 
 // Instâncias próprias desta rota
 const claudeRuntime = new ClaudeRuntime();
 const codexRuntime = new CodexRuntime();
+const opencodeRuntime = new OpenCodeRuntime();
 
 function runtimeFor(name: RuntimeName): { listModels(): Promise<RuntimeModel[]> } {
-  return name === 'codex' ? codexRuntime : claudeRuntime;
+  if (name === 'codex') return codexRuntime;
+  if (name === 'opencode') return opencodeRuntime;
+  return claudeRuntime;
 }
 
 function isValidPatch(patch: unknown): patch is RuntimeConfigPatch {
@@ -41,7 +46,7 @@ export default async function configRoutes(app: FastifyInstance) {
     const body = request.body;
 
     if (!body || typeof body !== 'object') {
-      return reply.code(400).send({ error: 'Request body must include "claude" and/or "codex"' });
+      return reply.code(400).send({ error: 'Request body must include "claude", "codex" and/or "opencode"' });
     }
 
     const patches: Partial<Record<RuntimeName, RuntimeConfigPatch>> = {};
@@ -62,7 +67,7 @@ export default async function configRoutes(app: FastifyInstance) {
     }
 
     if (Object.keys(patches).length === 0) {
-      return reply.code(400).send({ error: 'Request body must include "claude" and/or "codex"' });
+      return reply.code(400).send({ error: 'Request body must include "claude", "codex" and/or "opencode"' });
     }
 
     let config = getConfig();

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
-export type RuntimeName = 'claude' | 'codex';
+export type RuntimeName = 'claude' | 'codex' | 'opencode';
 
 export type RuntimeConfig = {
   enabled: boolean;
@@ -10,6 +10,7 @@ export type RuntimeConfig = {
 export type AdapterConfig = {
   claude: RuntimeConfig;
   codex: RuntimeConfig;
+  opencode: RuntimeConfig;
 };
 
 // Arquivo JSON local onde as configuracoes ficam
@@ -21,6 +22,7 @@ function defaultConfig(): AdapterConfig {
   return {
     claude: { enabled: true },
     codex: { enabled: true },
+    opencode: { enabled: true },
   };
 }
 
@@ -40,6 +42,7 @@ function loadConfig() {
   config = {
     claude: { ...base.claude, ...saved.claude },
     codex: { ...base.codex, ...saved.codex },
+    opencode: { ...base.opencode, ...saved.opencode },
   };
 }
 

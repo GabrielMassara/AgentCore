@@ -7,6 +7,7 @@ import { ClaudeRuntime } from '../runtimes/claude/claude.runtime';
 import { ClaudeEventMapper } from '../runtimes/claude/claude.mapper';
 import { CodexRuntime } from '../runtimes/codex/codex.runtime';
 import { readCodexHistory } from '../runtimes/codex/codex.history';
+import { OpenCodeRuntime } from '../runtimes/opencode/opencode.runtime';
 import { AgentRuntime, MessageAttachment } from '../runtimes/agent-runtime';
 import { subscribe, unsubscribe } from '../events/event-bus';
 import { AgentEvent } from '../events/agent-event';
@@ -14,7 +15,7 @@ import { AgentSession, SessionStatus, CodexSandboxMode, CodexReasoningEffort, Co
 import { getCachedClaudeTools } from '../sessions/claude-tools-cache';
 
 type CreateSessionBody = {
-  runtime: 'claude' | 'codex';
+  runtime: 'claude' | 'codex' | 'opencode';
   projectPath: string;
 };
 
@@ -219,10 +220,13 @@ const isDev = process.env.NODE_ENV !== 'production';
 // O controle de qual sessão está rodando fica dentro do próprio runtime.
 const claudeRuntime = new ClaudeRuntime();
 const codexRuntime = new CodexRuntime();
+const opencodeRuntime = new OpenCodeRuntime();
 
 // Escolhe a instância de runtime certa para uma sessão de acordo com o campo AgentSession.runtime.
 function runtimeFor(session: AgentSession): AgentRuntime {
-  return session.runtime === 'codex' ? codexRuntime : claudeRuntime;
+  if (session.runtime === 'codex') return codexRuntime;
+  if (session.runtime === 'opencode') return opencodeRuntime;
+  return claudeRuntime;
 }
 
 export default async function sessionRoutes(app: FastifyInstance) {
@@ -235,7 +239,7 @@ export default async function sessionRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: '"runtime" and "projectPath" are required' });
     }
 
-    if (runtime !== 'claude' && runtime !== 'codex') {
+    if (runtime !== 'claude' && runtime !== 'codex' && runtime !== 'opencode') {
       return reply.code(400).send({ error: `Unsupported runtime: "${runtime}"` });
     }
 
