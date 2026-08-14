@@ -185,6 +185,33 @@ export class OpenCodeRuntime implements AgentRuntime {
     await client.session.abort({ path: { id: session.providerSessionId }, query: { directory: session.projectPath } }).catch(() => {});
   }
 
+  // Responde a um pedido de permissão pendente
+  async resolvePermission(session: AgentSession, permissionId: string, decision: 'allow' | 'deny'): Promise<boolean> {
+    if (!session.providerSessionId) {
+      return false;
+    }
+
+    const { client } = await getDefaultServer();
+
+    const result = await client.postSessionIdPermissionsPermissionId({
+      path: { id: session.providerSessionId, permissionID: permissionId },
+      // "once": aprova só esse pedido, sem "lembrar" pro resto da sessão
+      body: { response: decision === 'allow' ? 'once' : 'reject' },
+      query: { directory: session.projectPath },
+    });
+
+    if (result.error) {
+      // 404 aqui normalmente é "esse pedido já foi respondido ou nunca existiu"
+      if (result.response.status === 404) {
+        return false;
+      }
+
+      throw new Error(`OpenCode permission reply failed: ${JSON.stringify(result.error)}`);
+    }
+
+    return result.data === true;
+  }
+
   // Pergunta pro servidor OpenCode quais providers estão configurados
   async listModels(): Promise<RuntimeModel[]> {
     const { client } = await getDefaultServer();

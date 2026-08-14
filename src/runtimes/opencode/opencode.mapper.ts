@@ -12,7 +12,18 @@ type MessagePartDeltaEvent = {
   };
 };
 
-type OpenCodeEvent = Event | MessagePartDeltaEvent;
+type PermissionAskedEvent = {
+  type: 'permission.asked';
+  properties: {
+    id: string;
+    sessionID: string;
+    permission: string;
+    patterns?: string[];
+    tool: { messageID: string; callID: string };
+  };
+};
+
+type OpenCodeEvent = Event | MessagePartDeltaEvent | PermissionAskedEvent;
 
 function eventSessionId(event: OpenCodeEvent): string | undefined {
   const props = event.properties as {
@@ -76,6 +87,10 @@ export class OpenCodeEventMapper {
 
     if (event.type === 'permission.updated') {
       return this.mapPermission(event.properties);
+    }
+
+    if (event.type === 'permission.asked') {
+      return this.mapPermissionAsked(event.properties);
     }
 
     if (event.type === 'todo.updated') {
@@ -174,6 +189,23 @@ export class OpenCodeEventMapper {
         permissionId: permission.id,
         tool: permission.type,
         description: permission.title,
+      },
+    ];
+  }
+
+  private mapPermissionAsked(props: PermissionAskedEvent['properties']): AgentEvent[] {
+    const patterns = props.patterns && props.patterns.length ? props.patterns.join(', ') : undefined;
+    const description = patterns
+      ? `Usar a permissão "${props.permission}" em "${patterns}"`
+      : `Usar a permissão "${props.permission}"`;
+
+    return [
+      {
+        type: 'permission.requested',
+        sessionId: this.sessionId,
+        permissionId: props.id,
+        tool: props.permission,
+        description,
       },
     ];
   }

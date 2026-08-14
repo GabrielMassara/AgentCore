@@ -1061,7 +1061,21 @@ export default async function sessionRoutes(app: FastifyInstance) {
         return reply.code(404).send({ error: 'Session not found' });
       }
 
-      const resolved = claudeRuntime.resolvePermission(sessionId, permissionId, { behavior: 'allow' });
+      // Codex não tem esse conceito (sem canUseTool/callback de aprovação na SDK)
+      if (session.runtime === 'codex') {
+        return reply.code(400).send({ error: 'permissions not supported for Codex sessions' });
+      }
+
+      let resolved: boolean;
+
+      try {
+        resolved = session.runtime === 'opencode'
+          ? await opencodeRuntime.resolvePermission(session, permissionId, 'allow')
+          : claudeRuntime.resolvePermission(sessionId, permissionId, { behavior: 'allow' });
+      } catch (err) {
+        request.log.error(err, 'resolvePermission: failed to approve');
+        return reply.code(502).send({ error: 'Failed to approve permission' });
+      }
 
       if (!resolved) {
         return reply.code(404).send({ error: 'Permission request not found' });
@@ -1082,13 +1096,29 @@ export default async function sessionRoutes(app: FastifyInstance) {
         return reply.code(404).send({ error: 'Session not found' });
       }
 
+      // Codex não tem esse conceito
+      if (session.runtime === 'codex') {
+        return reply.code(400).send({ error: 'permissions not supported for Codex sessions' });
+      }
+
       let reason = 'Rejected by user';
 
       if (request.body && request.body.reason) {
         reason = request.body.reason;
       }
 
-      const resolved = claudeRuntime.resolvePermission(sessionId, permissionId, { behavior: 'deny', message: reason });
+      let resolved: boolean;
+
+      try {
+        // OpenCode não aceita um motivo em texto livre pro reject, só o "response: reject".
+        // "reason" continua sendo aceito no corpo pra manter o mesmo formato de request entre os dois runtimes, só não é repassado pro servidor OpenCode.
+        resolved = session.runtime === 'opencode'
+          ? await opencodeRuntime.resolvePermission(session, permissionId, 'deny')
+          : claudeRuntime.resolvePermission(sessionId, permissionId, { behavior: 'deny', message: reason });
+      } catch (err) {
+        request.log.error(err, 'resolvePermission: failed to reject');
+        return reply.code(502).send({ error: 'Failed to reject permission' });
+      }
 
       if (!resolved) {
         return reply.code(404).send({ error: 'Permission request not found' });
