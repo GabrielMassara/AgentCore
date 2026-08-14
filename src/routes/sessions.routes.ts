@@ -693,7 +693,6 @@ export default async function sessionRoutes(app: FastifyInstance) {
   );
 
   // Configura o permission mode de uma sessão. Sempre grava como o padrão usado na próxima
-  // query() (options.permissionMode) se já existe uma execução em andamento, aplica na hora
   app.post<{ Params: { sessionId: string }; Body: SetPermissionModeBody }>(
     '/v1/sessions/:sessionId/permission-mode',
     async (request, reply) => {
@@ -704,9 +703,9 @@ export default async function sessionRoutes(app: FastifyInstance) {
         return reply.code(404).send({ error: 'Session not found' });
       }
 
-      // permissionMode é um conceito apenas do Claude
-      if (session.runtime !== 'claude') {
-        return reply.code(400).send({ error: 'permission-mode only applies to Claude sessions' });
+      // Codex não tem nenhum conceito de permission mode
+      if (session.runtime === 'codex') {
+        return reply.code(400).send({ error: 'permission-mode does not apply to Codex sessions' });
       }
 
       const mode = request.body && request.body.mode;
@@ -715,11 +714,17 @@ export default async function sessionRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: `"mode" must be one of: ${validPermissionModes.join(', ')}` });
       }
 
+      // O OpenCode só tem agent equivalente pros modos "default" (agent "build") e "plan" (agent "plan")
+      if (session.runtime === 'opencode' && mode !== 'default' && mode !== 'plan') {
+        return reply.code(400).send({ error: 'OpenCode sessions only support "default" or "plan" permission modes' });
+      }
+
       updateSession(sessionId, { permissionMode: mode });
 
       let applied: 'live' | 'pending' = 'pending';
 
-      if (session.status === 'running' || session.status === 'waiting_permission') {
+      // Só o Claude tem uma Query viva pra aplicar isso numa execução em andamento
+      if (session.runtime === 'claude' && (session.status === 'running' || session.status === 'waiting_permission')) {
         try {
           const changedLive = await claudeRuntime.setPermissionMode(sessionId, mode);
 

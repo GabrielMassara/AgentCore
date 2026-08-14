@@ -81,11 +81,16 @@ export class OpenCodeRuntime implements AgentRuntime {
 
       const model = parseModel(session.model);
 
+      // "default" usa o agent "build" (o próprio padrão do servidor quando "agent" não é enviado);
+      // só "plan" precisa ser explicitado, mapeado a partir de session.permissionMode
+      const agent = session.permissionMode === 'plan' ? 'plan' : undefined;
+
       const result = await client.session.prompt({
         path: { id: providerSessionId },
         query: { directory },
         body: {
           ...(model ? { model } : {}),
+          ...(agent ? { agent } : {}),
           parts: [{ type: 'text', text: content }],
         },
         signal: abortController.signal,
