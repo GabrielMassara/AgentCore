@@ -204,6 +204,24 @@ export class OpenCodeRuntime implements AgentRuntime {
     await client.session.abort({ path: { id: session.providerSessionId }, query: { directory: session.projectPath } }).catch(() => {});
   }
 
+  // Apaga a conversa do lado do servidor OpenCode; sem conversa iniciada não há o que apagar lá
+  async deleteSession(session: AgentSession): Promise<void> {
+    if (!session.providerSessionId) {
+      return;
+    }
+
+    const { client } = await getDefaultServer();
+
+    const result = await client.session.delete({
+      path: { id: session.providerSessionId },
+      query: { directory: session.projectPath },
+    });
+
+    if (result.error) {
+      throw new Error(`OpenCode session.delete failed: ${JSON.stringify(result.error)}`);
+    }
+  }
+
   // Responde a um pedido de permissão pendente
   async resolvePermission(session: AgentSession, permissionId: string, decision: 'allow' | 'deny'): Promise<boolean> {
     if (!session.providerSessionId) {

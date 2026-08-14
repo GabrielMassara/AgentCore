@@ -486,10 +486,16 @@ export default async function sessionRoutes(app: FastifyInstance) {
         return reply.code(409).send({ error: `Cannot delete session while it is busy (status: "${session.status}")` });
       }
 
-      // Só existe pro Claude, a Codex SDK não tem nada equivalente
+      // Codex não tem nada equivalente na SDK; Claude e OpenCode têm, cada um do seu jeito
       if (session.runtime === 'claude' && session.providerSessionId) {
         try {
           await deleteProviderSession(session.providerSessionId);
+        } catch (err) {
+          request.log.warn(err, 'deleteSession: failed to delete provider-side conversation');
+        }
+      } else if (session.runtime === 'opencode') {
+        try {
+          await opencodeRuntime.deleteSession(session);
         } catch (err) {
           request.log.warn(err, 'deleteSession: failed to delete provider-side conversation');
         }
