@@ -11,15 +11,40 @@ function loadSdk() {
   return import('@opencode-ai/sdk');
 }
 
-// Servidor OpenCode "default", único, reaproveitado por todas as sessões e projetos enquanto o processo do Adapter viver
-let defaultServer: Promise<{ client: OpencodeClient }> | null = null;
+type OpenCodeServerHandle = { close(): void };
 
-function getDefaultServer(): Promise<{ client: OpencodeClient }> {
+// Servidor OpenCode "default", único, reaproveitado por todas as sessões e projetos enquanto o processo do Adapter viver
+let defaultServer: Promise<{ client: OpencodeClient; server: OpenCodeServerHandle }> | null = null;
+
+function getDefaultServer(): Promise<{ client: OpencodeClient; server: OpenCodeServerHandle }> {
   if (!defaultServer) {
-    defaultServer = loadSdk().then(({ createOpencode }) => createOpencode()).then(({ client }) => ({ client }));
+    defaultServer = loadSdk().then(({ createOpencode }) => createOpencode());
+
+    // Um startup falho não pode deixar
+    // defaultServer preso numa Promise rejeitada pra sempre: sem isso, toda chamada seguinte
+    // falharia até reiniciar o processo, mesmo depois da porta ser liberada.
+    defaultServer.catch(() => {
+      defaultServer = null;
+    });
   }
 
   return defaultServer;
+}
+
+// Fecha o servidor OpenCode "default", se algum já tiver sido criado (mata o processo `opencode
+// serve` por baixo). Chamado no shutdown do Adapter (ver server.ts) pra não deixar esse processo
+// órfão quando o processo do Adapter termina.
+export async function closeOpenCodeServer(): Promise<void> {
+  if (!defaultServer) {
+    return;
+  }
+
+  try {
+    const { server } = await defaultServer;
+    server.close();
+  } catch {
+    // Nunca chegou a subir direito, não tem o que fechar.
+  }
 }
 
 // Guarda, para cada sessão EM EXECUÇÃO, o AbortController da chamada de session.prompt() em andamento

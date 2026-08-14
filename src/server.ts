@@ -3,6 +3,7 @@ import cors from '@fastify/cors';
 import healthRoutes from './routes/health';
 import sessionRoutes from './routes/sessions.routes';
 import configRoutes from './routes/config.routes';
+import { closeOpenCodeServer } from './runtimes/opencode/opencode.runtime';
 
 const server = Fastify({ logger: true });
 
@@ -28,3 +29,22 @@ const start = async () => {
 };
 
 start();
+
+// Sem isso, o processo `opencode serve` que OpenCodeRuntime sobe (ver getDefaultServer) fica
+// órfão a cada restart do Adapter em desenvolvimento
+async function shutdown() {
+  server.log.info('Shutting down: closing OpenCode server, if any...');
+
+  try {
+    await closeOpenCodeServer();
+  } catch (err) {
+    server.log.error(err, 'shutdown: failed to close OpenCode server');
+  }
+
+  server.log.info('OpenCode server closed, closing Fastify...');
+  await server.close();
+  process.exit(0);
+}
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
