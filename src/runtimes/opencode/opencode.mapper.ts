@@ -104,6 +104,32 @@ export class OpenCodeEventMapper {
     return [];
   }
 
+  // Traduz o histórico já persistido pro mesmo AgentEvent usado no SSE ao vivo
+  mapHistory(messages: { info: Message; parts: Part[] }[]): AgentEvent[] {
+    const events: AgentEvent[] = [];
+
+    for (const message of messages) {
+      if (message.info.role === 'user') {
+        const text = message.parts
+          .filter((part): part is Part & { type: 'text' } => part.type === 'text')
+          .map((part) => part.text)
+          .join('');
+
+        events.push({ type: 'user.message', sessionId: this.sessionId, text, messageId: message.info.id });
+        continue;
+      }
+
+      events.push(...this.mapMessageUpdated(message.info));
+
+      for (const part of message.parts) {
+        this.partTypes.set(part.id, part.type);
+        events.push(...this.mapPartUpdated(part));
+      }
+    }
+
+    return events;
+  }
+
   private mapMessageUpdated(info: Message): AgentEvent[] {
     if (info.role === 'assistant') {
       this.assistantMessageIds.add(info.id);

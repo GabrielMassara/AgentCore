@@ -3,6 +3,7 @@ import { AgentRuntime, MessageAttachment, RuntimeModel } from '../agent-runtime'
 import { AgentSession } from '../../sessions/session';
 import { getSession, updateSession } from '../../sessions/session-manager';
 import { publish } from '../../events/event-bus';
+import { AgentEvent } from '../../events/agent-event';
 import { OpenCodeEventMapper, eventBelongsToSession } from './opencode.mapper';
 
 export type OpenCodeUsage = {
@@ -260,6 +261,27 @@ export class OpenCodeRuntime implements AgentRuntime {
       cacheReadTokens: data.tokens?.cache?.read ?? 0,
       cacheWriteTokens: data.tokens?.cache?.write ?? 0,
     };
+  }
+
+  // Histórico completo da sessão direto do que o servidor OpenCode já persiste
+  async getHistory(session: AgentSession): Promise<AgentEvent[]> {
+    if (!session.providerSessionId) {
+      return [];
+    }
+
+    const { client } = await getDefaultServer();
+
+    const result = await client.session.messages({
+      path: { id: session.providerSessionId },
+      query: { directory: session.projectPath },
+    });
+
+    if (result.error) {
+      throw new Error(`OpenCode session.messages failed: ${JSON.stringify(result.error)}`);
+    }
+
+    const mapper = new OpenCodeEventMapper(session.id);
+    return mapper.mapHistory(result.data);
   }
 
   // Pergunta pro servidor OpenCode quais providers estão configurados

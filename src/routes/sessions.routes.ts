@@ -365,6 +365,28 @@ export default async function sessionRoutes(app: FastifyInstance) {
         return reply.send({ events: events.slice(start, end) });
       }
 
+      // O OpenCode expõe as mensagens já persistidas nativamente (client.session.messages()), sem
+      // precisar reconstruir um log local como o Codex precisa acima.
+      if (session && session.runtime === 'opencode') {
+        let events: AgentEvent[];
+
+        try {
+          events = await opencodeRuntime.getHistory(session);
+        } catch (err) {
+          request.log.error(err, 'getHistory: failed to fetch OpenCode history');
+          return reply.code(502).send({ error: 'Failed to fetch history' });
+        }
+
+        if (!events.length) {
+          return reply.code(404).send({ error: 'Session not found' });
+        }
+
+        const start = parsedOffset ?? 0;
+        const end = parsedLimit !== undefined ? start + parsedLimit : undefined;
+
+        return reply.send({ events: events.slice(start, end) });
+      }
+
       // Se o registro local existe, usa o providerSessionId dele. Senão, trata o próprio :sessionId como sendo o providerSessionId
       const providerSessionId = session ? session.providerSessionId! : sessionId;
 
