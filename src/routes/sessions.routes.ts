@@ -513,7 +513,7 @@ export default async function sessionRoutes(app: FastifyInstance) {
       }
 
       // codex nao tem forkSession
-      if (session.runtime !== 'claude') {
+      if (session.runtime !== 'claude' && session.runtime !== 'opencode') {
         return reply.code(400).send({ error: 'fork not supported for this session' });
       }
 
@@ -524,18 +524,23 @@ export default async function sessionRoutes(app: FastifyInstance) {
 
       // Se vier um upToMessageId, a ramificação corta a transcrição exatamente nessa mensagem, mensagens posteriores da conversa original não entram na cópia
       const upToMessageId = request.body && request.body.upToMessageId;
-      const forkOptions = upToMessageId ? { upToMessageId } : undefined;
 
-      let forkResult;
+      let forkedProviderSessionId: string;
 
       try {
-        forkResult = await forkSession(session.providerSessionId, forkOptions);
+        if (session.runtime === 'opencode') {
+          forkedProviderSessionId = await opencodeRuntime.fork(session, upToMessageId);
+        } else {
+          const forkOptions = upToMessageId ? { upToMessageId } : undefined;
+          const forkResult = await forkSession(session.providerSessionId, forkOptions);
+          forkedProviderSessionId = forkResult.sessionId;
+        }
       } catch (err) {
-        request.log.error(err, 'forkSession: failed to fork provider-side conversation');
+        request.log.error(err, 'fork: failed to fork provider-side conversation');
         return reply.code(502).send({ error: 'Failed to fork session' });
       }
 
-      let forked = createSession(session.runtime, session.projectPath, forkResult.sessionId, session.id, upToMessageId);
+      let forked = createSession(session.runtime, session.projectPath, forkedProviderSessionId, session.id, upToMessageId);
 
       // Propaga um título distinto para a ramificação ficar reconhecível na lista de sessões.
       if (session.title) {

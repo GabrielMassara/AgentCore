@@ -263,6 +263,58 @@ export class OpenCodeRuntime implements AgentRuntime {
     };
   }
 
+  // Ramifica a conversa no próprio servidor OpenCode. upToMessageId corta a ramificação nesse ponto
+  async fork(session: AgentSession, upToMessageId?: string): Promise<string> {
+    if (!session.providerSessionId) {
+      throw new Error('Session has no conversation to fork yet');
+    }
+
+    const { client } = await getDefaultServer();
+
+
+    // O open code corta naqula mensagem escolhida, diferente dos outros agentes.
+    // Para isso pegamos o id da proxima mensagem para ser inclusiva
+    const messageID = await this.resolveInclusiveForkCutoff(client, session, upToMessageId);
+
+    const result = await client.session.fork({
+      path: { id: session.providerSessionId },
+      query: { directory: session.projectPath },
+      body: messageID ? { messageID } : {},
+    });
+
+    if (result.error || !result.data) {
+      throw new Error(`OpenCode session.fork failed: ${JSON.stringify(result.error)}`);
+    }
+
+    return result.data.id;
+  }
+
+  private async resolveInclusiveForkCutoff(client: OpencodeClient, session: AgentSession, upToMessageId: string | undefined): Promise<string | undefined> {
+    if (!upToMessageId) {
+      return undefined;
+    }
+
+    const result = await client.session.messages({
+      path: { id: session.providerSessionId as string },
+      query: { directory: session.projectPath },
+    });
+
+    if (result.error || !result.data) {
+      // Sem a lista pra traduzir o corte, cai pro comportamento antigo (exclusivo) em vez de falhar o fork inteiro
+      return upToMessageId;
+    }
+
+    const index = result.data.findIndex((m) => m.info.id === upToMessageId);
+
+    if (index === -1) {
+      // Não deveria acontecer mas sem a posição pra traduzir o corte, cai pro comportamento antigo em vez de arriscar uma cópia
+      // completa que exporia mensagens além do que foi pedido.
+      return upToMessageId;
+    }
+
+    return result.data[index + 1]?.info.id;
+  }
+
   // Histórico completo da sessão direto do que o servidor OpenCode já persiste
   async getHistory(session: AgentSession): Promise<AgentEvent[]> {
     if (!session.providerSessionId) {

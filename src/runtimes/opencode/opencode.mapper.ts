@@ -158,7 +158,7 @@ export class OpenCodeEventMapper {
         return [];
       }
 
-      return [{ type: 'assistant.message', sessionId: this.sessionId, text: part.text, messageId: part.id }];
+      return [{ type: 'assistant.message', sessionId: this.sessionId, text: part.text, messageId: part.messageID }];
     }
 
     if (part.type === 'tool') {
