@@ -425,6 +425,16 @@ export default async function sessionRoutes(app: FastifyInstance) {
         );
       }
 
+      // Diferente do Claude/Codex, não acumula nada localmente
+      if (session.runtime === 'opencode') {
+        try {
+          return reply.send(await opencodeRuntime.getUsage(session));
+        } catch (err) {
+          request.log.error(err, 'getUsage: failed to fetch OpenCode usage');
+          return reply.code(502).send({ error: 'Failed to fetch usage' });
+        }
+      }
+
       return reply.send(
         session.usage ?? {
           totalCostUsd: 0,

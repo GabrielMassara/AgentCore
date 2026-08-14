@@ -5,6 +5,24 @@ import { getSession, updateSession } from '../../sessions/session-manager';
 import { publish } from '../../events/event-bus';
 import { OpenCodeEventMapper, eventBelongsToSession } from './opencode.mapper';
 
+export type OpenCodeUsage = {
+  costUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+};
+
+const EMPTY_USAGE: OpenCodeUsage = {
+  costUsd: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  reasoningTokens: 0,
+  cacheReadTokens: 0,
+  cacheWriteTokens: 0,
+};
+
 // @opencode-ai/sdk é ESM-only, mas esse projeto roda em CommonJS. Um `import` estático falharia
 // (ERR_PACKAGE_PATH_NOT_EXPORTED), então usamos `import()` dinâmico para carregar o pacote.
 function loadSdk() {
@@ -210,6 +228,38 @@ export class OpenCodeRuntime implements AgentRuntime {
     }
 
     return result.data === true;
+  }
+
+  // o próprio servidor OpenCode já mantém esses totais por sessão
+  async getUsage(session: AgentSession): Promise<OpenCodeUsage> {
+    if (!session.providerSessionId) {
+      return EMPTY_USAGE;
+    }
+
+    const { client } = await getDefaultServer();
+
+    const result = await client.session.get({
+      path: { id: session.providerSessionId },
+      query: { directory: session.projectPath },
+    });
+
+    if (result.error) {
+      throw new Error(`OpenCode session.get failed: ${JSON.stringify(result.error)}`);
+    }
+
+    const data = result.data as unknown as {
+      cost?: number;
+      tokens?: { input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } };
+    };
+
+    return {
+      costUsd: data.cost ?? 0,
+      inputTokens: data.tokens?.input ?? 0,
+      outputTokens: data.tokens?.output ?? 0,
+      reasoningTokens: data.tokens?.reasoning ?? 0,
+      cacheReadTokens: data.tokens?.cache?.read ?? 0,
+      cacheWriteTokens: data.tokens?.cache?.write ?? 0,
+    };
   }
 
   // Pergunta pro servidor OpenCode quais providers estão configurados
