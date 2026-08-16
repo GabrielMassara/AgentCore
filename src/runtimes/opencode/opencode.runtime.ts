@@ -24,6 +24,15 @@ const EMPTY_USAGE: OpenCodeUsage = {
   cacheWriteTokens: 0,
 };
 
+// Formato próprio, não o RewindFilesResult do Claude
+export type OpenCodeRewindResult = {
+  canRewind: boolean;
+  error?: string;
+  filesChanged?: number;
+  insertions?: number;
+  deletions?: number;
+};
+
 // @opencode-ai/sdk é ESM-only, mas esse projeto roda em CommonJS. Um `import` estático falharia
 // (ERR_PACKAGE_PATH_NOT_EXPORTED), então usamos `import()` dinâmico para carregar o pacote.
 function loadSdk() {
@@ -220,6 +229,39 @@ export class OpenCodeRuntime implements AgentRuntime {
     if (result.error) {
       throw new Error(`OpenCode session.delete failed: ${JSON.stringify(result.error)}`);
     }
+  }
+
+  // Desfaz as edições de arquivo feitas a partir de uma mensagem de usuário específica, via o
+  // snapshot (git por baixo) que o próprio servidor OpenCode mantém.
+  async rewindFiles(session: AgentSession, userMessageId: string): Promise<OpenCodeRewindResult> {
+    if (!session.providerSessionId) {
+      return { canRewind: false, error: 'Session has no conversation to rewind yet' };
+    }
+
+    const { client } = await getDefaultServer();
+
+    const result = await client.session.revert({
+      path: { id: session.providerSessionId },
+      query: { directory: session.projectPath },
+      body: { messageID: userMessageId },
+    });
+
+    if (result.error) {
+      if (result.response.status === 400 || result.response.status === 404) {
+        return { canRewind: false, error: JSON.stringify(result.error) };
+      }
+
+      throw new Error(`OpenCode session.revert failed: ${JSON.stringify(result.error)}`);
+    }
+
+    const summary = result.data?.summary;
+
+    return {
+      canRewind: true,
+      ...(summary?.files !== undefined ? { filesChanged: summary.files } : {}),
+      ...(summary?.additions !== undefined ? { insertions: summary.additions } : {}),
+      ...(summary?.deletions !== undefined ? { deletions: summary.deletions } : {}),
+    };
   }
 
   // Responde a um pedido de permissão pendente

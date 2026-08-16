@@ -1050,7 +1050,7 @@ export default async function sessionRoutes(app: FastifyInstance) {
       }
 
       // codex nao tem sistema de rewind
-      if (session.runtime !== 'claude') {
+      if (session.runtime !== 'claude' && session.runtime !== 'opencode') {
         return reply.code(400).send({ error: 'rewind not supported for this session' });
       }
 
@@ -1071,6 +1071,12 @@ export default async function sessionRoutes(app: FastifyInstance) {
         dryRun = body.dryRun;
       }
 
+      // A API do OpenCode não tem modo de simulação pro revert, ter sem como
+      // prever o resultado sem aplicar de verdade
+      if (session.runtime === 'opencode' && dryRun) {
+        return reply.code(400).send({ error: '"dryRun" not supported for OpenCode sessions' });
+      }
+
       // Mesma regra do /fork: só existe conversa do lado do provedor depois da primeira mensagem.
       if (!session.providerSessionId) {
         return reply.code(409).send({ error: 'Session has no conversation to rewind yet' });
@@ -1079,7 +1085,9 @@ export default async function sessionRoutes(app: FastifyInstance) {
       let result;
 
       try {
-        result = await claudeRuntime.rewindFiles(session, userMessageId, dryRun !== undefined ? { dryRun } : undefined);
+        result = session.runtime === 'opencode'
+          ? await opencodeRuntime.rewindFiles(session, userMessageId)
+          : await claudeRuntime.rewindFiles(session, userMessageId, dryRun !== undefined ? { dryRun } : undefined);
       } catch (err) {
         request.log.error(err, 'rewindFiles: failed to rewind files');
         return reply.code(502).send({ error: 'Failed to rewind files' });
