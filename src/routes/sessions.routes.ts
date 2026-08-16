@@ -7,6 +7,7 @@ import { ClaudeRuntime } from '../runtimes/claude/claude.runtime';
 import { ClaudeEventMapper } from '../runtimes/claude/claude.mapper';
 import { CodexRuntime } from '../runtimes/codex/codex.runtime';
 import { readCodexHistory } from '../runtimes/codex/codex.history';
+import { OpenCodeRuntime } from '../runtimes/opencode/opencode.runtime';
 import { AgentRuntime, MessageAttachment } from '../runtimes/agent-runtime';
 import { subscribe, unsubscribe } from '../events/event-bus';
 import { AgentEvent } from '../events/agent-event';
@@ -14,7 +15,7 @@ import { AgentSession, SessionStatus, CodexSandboxMode, CodexReasoningEffort, Co
 import { getCachedClaudeTools } from '../sessions/claude-tools-cache';
 
 type CreateSessionBody = {
-  runtime: 'claude' | 'codex';
+  runtime: 'claude' | 'codex' | 'opencode';
   projectPath: string;
 };
 
@@ -219,10 +220,13 @@ const isDev = process.env.NODE_ENV !== 'production';
 // O controle de qual sessão está rodando fica dentro do próprio runtime.
 const claudeRuntime = new ClaudeRuntime();
 const codexRuntime = new CodexRuntime();
+const opencodeRuntime = new OpenCodeRuntime();
 
 // Escolhe a instância de runtime certa para uma sessão de acordo com o campo AgentSession.runtime.
 function runtimeFor(session: AgentSession): AgentRuntime {
-  return session.runtime === 'codex' ? codexRuntime : claudeRuntime;
+  if (session.runtime === 'codex') return codexRuntime;
+  if (session.runtime === 'opencode') return opencodeRuntime;
+  return claudeRuntime;
 }
 
 export default async function sessionRoutes(app: FastifyInstance) {
@@ -235,7 +239,7 @@ export default async function sessionRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: '"runtime" and "projectPath" are required' });
     }
 
-    if (runtime !== 'claude' && runtime !== 'codex') {
+    if (runtime !== 'claude' && runtime !== 'codex' && runtime !== 'opencode') {
       return reply.code(400).send({ error: `Unsupported runtime: "${runtime}"` });
     }
 
@@ -361,6 +365,28 @@ export default async function sessionRoutes(app: FastifyInstance) {
         return reply.send({ events: events.slice(start, end) });
       }
 
+      // O OpenCode expõe as mensagens já persistidas nativamente (client.session.messages()), sem
+      // precisar reconstruir um log local como o Codex precisa acima.
+      if (session && session.runtime === 'opencode') {
+        let events: AgentEvent[];
+
+        try {
+          events = await opencodeRuntime.getHistory(session);
+        } catch (err) {
+          request.log.error(err, 'getHistory: failed to fetch OpenCode history');
+          return reply.code(502).send({ error: 'Failed to fetch history' });
+        }
+
+        if (!events.length) {
+          return reply.code(404).send({ error: 'Session not found' });
+        }
+
+        const start = parsedOffset ?? 0;
+        const end = parsedLimit !== undefined ? start + parsedLimit : undefined;
+
+        return reply.send({ events: events.slice(start, end) });
+      }
+
       // Se o registro local existe, usa o providerSessionId dele. Senão, trata o próprio :sessionId como sendo o providerSessionId
       const providerSessionId = session ? session.providerSessionId! : sessionId;
 
@@ -421,6 +447,16 @@ export default async function sessionRoutes(app: FastifyInstance) {
         );
       }
 
+      // Diferente do Claude/Codex, não acumula nada localmente
+      if (session.runtime === 'opencode') {
+        try {
+          return reply.send(await opencodeRuntime.getUsage(session));
+        } catch (err) {
+          request.log.error(err, 'getUsage: failed to fetch OpenCode usage');
+          return reply.code(502).send({ error: 'Failed to fetch usage' });
+        }
+      }
+
       return reply.send(
         session.usage ?? {
           totalCostUsd: 0,
@@ -450,10 +486,16 @@ export default async function sessionRoutes(app: FastifyInstance) {
         return reply.code(409).send({ error: `Cannot delete session while it is busy (status: "${session.status}")` });
       }
 
-      // Só existe pro Claude, a Codex SDK não tem nada equivalente
+      // Codex não tem nada equivalente na SDK; Claude e OpenCode têm, cada um do seu jeito
       if (session.runtime === 'claude' && session.providerSessionId) {
         try {
           await deleteProviderSession(session.providerSessionId);
+        } catch (err) {
+          request.log.warn(err, 'deleteSession: failed to delete provider-side conversation');
+        }
+      } else if (session.runtime === 'opencode') {
+        try {
+          await opencodeRuntime.deleteSession(session);
         } catch (err) {
           request.log.warn(err, 'deleteSession: failed to delete provider-side conversation');
         }
@@ -477,7 +519,7 @@ export default async function sessionRoutes(app: FastifyInstance) {
       }
 
       // codex nao tem forkSession
-      if (session.runtime !== 'claude') {
+      if (session.runtime !== 'claude' && session.runtime !== 'opencode') {
         return reply.code(400).send({ error: 'fork not supported for this session' });
       }
 
@@ -488,18 +530,23 @@ export default async function sessionRoutes(app: FastifyInstance) {
 
       // Se vier um upToMessageId, a ramificação corta a transcrição exatamente nessa mensagem, mensagens posteriores da conversa original não entram na cópia
       const upToMessageId = request.body && request.body.upToMessageId;
-      const forkOptions = upToMessageId ? { upToMessageId } : undefined;
 
-      let forkResult;
+      let forkedProviderSessionId: string;
 
       try {
-        forkResult = await forkSession(session.providerSessionId, forkOptions);
+        if (session.runtime === 'opencode') {
+          forkedProviderSessionId = await opencodeRuntime.fork(session, upToMessageId);
+        } else {
+          const forkOptions = upToMessageId ? { upToMessageId } : undefined;
+          const forkResult = await forkSession(session.providerSessionId, forkOptions);
+          forkedProviderSessionId = forkResult.sessionId;
+        }
       } catch (err) {
-        request.log.error(err, 'forkSession: failed to fork provider-side conversation');
+        request.log.error(err, 'fork: failed to fork provider-side conversation');
         return reply.code(502).send({ error: 'Failed to fork session' });
       }
 
-      let forked = createSession(session.runtime, session.projectPath, forkResult.sessionId, session.id, upToMessageId);
+      let forked = createSession(session.runtime, session.projectPath, forkedProviderSessionId, session.id, upToMessageId);
 
       // Propaga um título distinto para a ramificação ficar reconhecível na lista de sessões.
       if (session.title) {
@@ -587,6 +634,10 @@ export default async function sessionRoutes(app: FastifyInstance) {
       // A Codex SDK só tem UserInput de imagem
       if (session.runtime === 'codex' && attachments?.some((attachment) => attachment.kind === 'document')) {
         return reply.code(400).send({ error: 'Codex sessions only support image attachments' });
+      }
+
+      if (session.runtime === 'opencode' && attachments?.length) {
+        return reply.code(400).send({ error: 'OpenCode sessions do not support attachments yet' });
       }
 
       // Uma sessão só pode processar uma mensagem por vez.
@@ -685,7 +736,6 @@ export default async function sessionRoutes(app: FastifyInstance) {
   );
 
   // Configura o permission mode de uma sessão. Sempre grava como o padrão usado na próxima
-  // query() (options.permissionMode) se já existe uma execução em andamento, aplica na hora
   app.post<{ Params: { sessionId: string }; Body: SetPermissionModeBody }>(
     '/v1/sessions/:sessionId/permission-mode',
     async (request, reply) => {
@@ -696,9 +746,9 @@ export default async function sessionRoutes(app: FastifyInstance) {
         return reply.code(404).send({ error: 'Session not found' });
       }
 
-      // permissionMode é um conceito apenas do Claude
-      if (session.runtime !== 'claude') {
-        return reply.code(400).send({ error: 'permission-mode only applies to Claude sessions' });
+      // Codex não tem nenhum conceito de permission mode
+      if (session.runtime === 'codex') {
+        return reply.code(400).send({ error: 'permission-mode does not apply to Codex sessions' });
       }
 
       const mode = request.body && request.body.mode;
@@ -707,11 +757,17 @@ export default async function sessionRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: `"mode" must be one of: ${validPermissionModes.join(', ')}` });
       }
 
+      // O OpenCode só tem agent equivalente pros modos "default" (agent "build") e "plan" (agent "plan")
+      if (session.runtime === 'opencode' && mode !== 'default' && mode !== 'plan') {
+        return reply.code(400).send({ error: 'OpenCode sessions only support "default" or "plan" permission modes' });
+      }
+
       updateSession(sessionId, { permissionMode: mode });
 
       let applied: 'live' | 'pending' = 'pending';
 
-      if (session.status === 'running' || session.status === 'waiting_permission') {
+      // Só o Claude tem uma Query viva pra aplicar isso numa execução em andamento
+      if (session.runtime === 'claude' && (session.status === 'running' || session.status === 'waiting_permission')) {
         try {
           const changedLive = await claudeRuntime.setPermissionMode(sessionId, mode);
 
@@ -994,7 +1050,7 @@ export default async function sessionRoutes(app: FastifyInstance) {
       }
 
       // codex nao tem sistema de rewind
-      if (session.runtime !== 'claude') {
+      if (session.runtime !== 'claude' && session.runtime !== 'opencode') {
         return reply.code(400).send({ error: 'rewind not supported for this session' });
       }
 
@@ -1015,6 +1071,12 @@ export default async function sessionRoutes(app: FastifyInstance) {
         dryRun = body.dryRun;
       }
 
+      // A API do OpenCode não tem modo de simulação pro revert, ter sem como
+      // prever o resultado sem aplicar de verdade
+      if (session.runtime === 'opencode' && dryRun) {
+        return reply.code(400).send({ error: '"dryRun" not supported for OpenCode sessions' });
+      }
+
       // Mesma regra do /fork: só existe conversa do lado do provedor depois da primeira mensagem.
       if (!session.providerSessionId) {
         return reply.code(409).send({ error: 'Session has no conversation to rewind yet' });
@@ -1023,7 +1085,9 @@ export default async function sessionRoutes(app: FastifyInstance) {
       let result;
 
       try {
-        result = await claudeRuntime.rewindFiles(session, userMessageId, dryRun !== undefined ? { dryRun } : undefined);
+        result = session.runtime === 'opencode'
+          ? await opencodeRuntime.rewindFiles(session, userMessageId)
+          : await claudeRuntime.rewindFiles(session, userMessageId, dryRun !== undefined ? { dryRun } : undefined);
       } catch (err) {
         request.log.error(err, 'rewindFiles: failed to rewind files');
         return reply.code(502).send({ error: 'Failed to rewind files' });
@@ -1048,7 +1112,21 @@ export default async function sessionRoutes(app: FastifyInstance) {
         return reply.code(404).send({ error: 'Session not found' });
       }
 
-      const resolved = claudeRuntime.resolvePermission(sessionId, permissionId, { behavior: 'allow' });
+      // Codex não tem esse conceito (sem canUseTool/callback de aprovação na SDK)
+      if (session.runtime === 'codex') {
+        return reply.code(400).send({ error: 'permissions not supported for Codex sessions' });
+      }
+
+      let resolved: boolean;
+
+      try {
+        resolved = session.runtime === 'opencode'
+          ? await opencodeRuntime.resolvePermission(session, permissionId, 'allow')
+          : claudeRuntime.resolvePermission(sessionId, permissionId, { behavior: 'allow' });
+      } catch (err) {
+        request.log.error(err, 'resolvePermission: failed to approve');
+        return reply.code(502).send({ error: 'Failed to approve permission' });
+      }
 
       if (!resolved) {
         return reply.code(404).send({ error: 'Permission request not found' });
@@ -1069,13 +1147,29 @@ export default async function sessionRoutes(app: FastifyInstance) {
         return reply.code(404).send({ error: 'Session not found' });
       }
 
+      // Codex não tem esse conceito
+      if (session.runtime === 'codex') {
+        return reply.code(400).send({ error: 'permissions not supported for Codex sessions' });
+      }
+
       let reason = 'Rejected by user';
 
       if (request.body && request.body.reason) {
         reason = request.body.reason;
       }
 
-      const resolved = claudeRuntime.resolvePermission(sessionId, permissionId, { behavior: 'deny', message: reason });
+      let resolved: boolean;
+
+      try {
+        // OpenCode não aceita um motivo em texto livre pro reject, só o "response: reject".
+        // "reason" continua sendo aceito no corpo pra manter o mesmo formato de request entre os dois runtimes, só não é repassado pro servidor OpenCode.
+        resolved = session.runtime === 'opencode'
+          ? await opencodeRuntime.resolvePermission(session, permissionId, 'deny')
+          : claudeRuntime.resolvePermission(sessionId, permissionId, { behavior: 'deny', message: reason });
+      } catch (err) {
+        request.log.error(err, 'resolvePermission: failed to reject');
+        return reply.code(502).send({ error: 'Failed to reject permission' });
+      }
 
       if (!resolved) {
         return reply.code(404).send({ error: 'Permission request not found' });
