@@ -44,7 +44,7 @@ different runtimes without the client ever needing to know how each SDK works in
 
 - **Claude Code**: implemented (`ClaudeRuntime`, via `@anthropic-ai/claude-agent-sdk`).
 - **Codex**: implemented (`CodexRuntime`, via `@openai/codex-sdk`).
-- **OpenCode**: planned.
+- **OpenCode**: implemented (`OpenCodeRuntime`, via `@opencode-ai/sdk`).
 
 ## Getting started
 
