@@ -24,6 +24,12 @@
 
 </div>
 
+<p align="center">
+  <a href="https://gabrielmassara.com/projetos/AgentCore/" target="_blank" rel="noopener noreferrer">
+    <img src="https://img.shields.io/badge/Abrir%20site%20do%20projeto-0078D4?style=for-the-badge" alt="Abrir site do projeto">
+  </a>
+</p>
+
 ---
 
 ## O que é
